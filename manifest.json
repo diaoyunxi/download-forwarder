@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Download Forwarder",
+  "version": "1.0.0",
+  "description": "捕获浏览器下载请求并转发到本地下载管理器（wget/curl/IDM/NDM/Gopeed）",
+  "permissions": [
+    "downloads",
+    "storage",
+    "notifications"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

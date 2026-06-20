@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 320px;
+      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f8f9fa;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .header h1 {
+      font-size: 16px;
+      font-weight: 600;
+      flex: 1;
+    }
+    .status-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .status-badge.connected {
+      background: #e6f4ea;
+      color: #137333;
+    }
+    .status-badge.disconnected {
+      background: #fce8e6;
+      color: #c5221f;
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+    .connected .status-dot { background: #34a853; }
+    .disconnected .status-dot { background: #ea4335; }
+    .server-info {
+      font-size: 11px;
+      color: #5f6368;
+      margin-bottom: 16px;
+    }
+    .card {
+      background: #fff;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+    }
+    .card-title {
+      font-size: 12px;
+      font-weight: 500;
+      color: #5f6368;
+      margin-bottom: 10px;
+    }
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .toggle {
+      width: 44px;
+      height: 24px;
+      background: #dadce0;
+      border-radius: 12px;
+      cursor: pointer;
+      position: relative;
+      transition: background 0.2s;
+    }
+    .toggle.active { background: #1a73e8; }
+    .toggle::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 20px;
+      height: 20px;
+      background: #fff;
+      border-radius: 50%;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+      transition: transform 0.2s;
+    }
+    .toggle.active::after { transform: translateX(20px); }
+    .program-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .program-btn {
+      padding: 8px;
+      border: 2px solid #e8eaed;
+      border-radius: 6px;
+      background: #fff;
+      cursor: pointer;
+      text-align: center;
+      font-size: 13px;
+      transition: all 0.15s;
+    }
+    .program-btn:hover { border-color: #1a73e8; }
+    .program-btn.selected {
+      border-color: #1a73e8;
+      background: #e8f0fe;
+      color: #1a73e8;
+      font-weight: 500;
+    }
+    .program-btn.disabled {
+      opacity: 0.4;
+      pointer-events: none;
+    }
+    .program-icon {
+      font-size: 20px;
+      margin-bottom: 4px;
+    }
+    .args-input {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #e8eaed;
+      border-radius: 6px;
+      font-size: 13px;
+      outline: none;
+      margin-top: 10px;
+    }
+    .args-input:focus { border-color: #1a73e8; }
+    .hint {
+      font-size: 11px;
+      color: #9aa0a6;
+      margin-top: 6px;
+      line-height: 1.4;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Download Forwarder</h1>
+    <div class="status-badge disconnected" id="status">
+      <span class="status-dot"></span>
+      <span id="status-text">未连接</span>
+    </div>
+  </div>
+  <div class="server-info" id="server-info">本地服务器未运行</div>
+
+  <div class="card">
+    <div class="toggle-row">
+      <span class="card-title">捕获下载</span>
+      <div class="toggle" id="toggle"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">下载管理器</div>
+    <div class="program-grid" id="program-grid">
+      <div class="program-btn" data-program="wget">
+        <div class="program-icon">&#x1F4E5;</div>
+        <div>wget</div>
+      </div>
+      <div class="program-btn" data-program="curl">
+        <div class="program-icon">&#x1F310;</div>
+        <div>curl</div>
+      </div>
+      <div class="program-btn" data-program="idm">
+        <div class="program-icon">&#x1F680;</div>
+        <div>IDM</div>
+      </div>
+      <div class="program-btn" data-program="ndm">
+        <div class="program-icon">&#x2B07;</div>
+        <div>NDM</div>
+      </div>
+    </div>
+    <input type="text" class="args-input" id="arguments" placeholder="额外参数（可选）">
+    <div class="hint">例如: -c (断点续传) 或 --limit-rate=1M</div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
