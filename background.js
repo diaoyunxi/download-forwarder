@@ -1,66 +1,184 @@
-const LOCAL_SERVER = 'http://127.0.0.1:18735';
+// Download Forwarder - Background Service Worker
+// Handles download interception, server communication, notifications and state
 
-// Track connection status
+const LOCAL_SERVER = "http://127.0.0.1:18735";
+const PING_INTERVAL = 15000;
+
 let serverConnected = false;
+let serverInfo = null;
+let recentDownloads = [];
 
-// Check server connection periodically
-async function checkConnection() {
+// --- Helpers ---
+function notify(title, message, silent) {
   try {
-    const resp = await fetch(`${LOCAL_SERVER}/ping`, {
-      method: 'GET',
-      signal: AbortSignal.timeout(2000)
-    });
-    if (resp.ok) {
-      const data = await resp.json();
-      serverConnected = true;
-      chrome.storage.local.set({ serverConnected: true, serverVersion: data.version || '1.0.0' });
-    }
-  } catch {
-    serverConnected = false;
-    chrome.storage.local.set({ serverConnected: false });
+    chrome.notifications.create(
+      String(Date.now() + Math.random()),
+      {
+        type: "basic",
+        iconUrl: "icons/icon128.png",
+        title: title,
+        message: message,
+        silent: !!silent,
+        priority: 0,
+      },
+      () => {
+        /* ignore errors */
+      }
+    );
+  } catch (e) {
+    console.error("notify error", e);
   }
 }
 
-// Check every 10 seconds
-checkConnection();
-setInterval(checkConnection, 10000);
+async function fetchJSON(url, options) {
+  const response = await fetch(url, {
+    ...options,
+    signal: AbortSignal.timeout(6000),
+  });
+  if (!response.ok && response.status !== 200) {
+    // Allow non-2xx only when body is parseable
+  }
+  return await response.json();
+}
 
+// --- Health check ---
+async function checkConnection() {
+  try {
+    const data = await fetchJSON(LOCAL_SERVER + "/ping", { method: "GET" });
+    if (data && data.status === "ok") {
+      serverConnected = true;
+      serverInfo = {
+        version: data.version || "1.0.0",
+        platform: data.platform || "unknown",
+        available_programs: data.available_programs || [],
+      };
+      chrome.storage.local.set({
+        serverConnected: true,
+        serverInfo: serverInfo,
+      });
+      return;
+    }
+    throw new Error("unexpected response");
+  } catch (err) {
+    const wasConnected = serverConnected;
+    serverConnected = false;
+    serverInfo = null;
+    chrome.storage.local.set({ serverConnected: false });
+    if (wasConnected) {
+      console.warn("Server disconnected", err);
+    }
+  }
+}
+
+// Periodic connectivity check
+checkConnection();
+setInterval(checkConnection, PING_INTERVAL);
+
+// --- Download interception ---
 chrome.downloads.onCreated.addListener(async (downloadItem) => {
   try {
-    const config = await chrome.storage.local.get(['enabled', 'program', 'arguments']);
+    const config = await chrome.storage.local.get([
+      "enabled",
+      "program",
+      "arguments",
+    ]);
 
     if (!config.enabled || !serverConnected) {
       return;
     }
 
-    const message = {
-      url: downloadItem.url,
-      filename: downloadItem.filename || '',
-      program: config.program || 'wget',
-      arguments: config.arguments || ''
+    // Only intercept downloads that look like real files (skip blob/internal)
+    const url = downloadItem.url || "";
+    if (!url || url.startsWith("blob:") || url.startsWith("data:")) {
+      return;
+    }
+
+    const filename =
+      downloadItem.filename ||
+      extractFilenameFromUrl(url) ||
+      "download";
+
+    const payload = {
+      url: url,
+      filename: filename,
+      program: config.program || "wget",
+      arguments: config.arguments || "",
     };
 
-    const resp = await fetch(`${LOCAL_SERVER}/download`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(message),
-      signal: AbortSignal.timeout(5000)
-    });
+    let result;
+    try {
+      result = await fetchJSON(LOCAL_SERVER + "/download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch (networkErr) {
+      console.error("Failed to contact local server", networkErr);
+      notify(
+        "下载转发失败",
+        "无法连接到本地服务器。请确认 server.py 是否启动。"
+      );
+      return;
+    }
 
-    const result = await resp.json();
-
-    if (result.status === 'success') {
-      chrome.downloads.cancel(downloadItem.id);
-      chrome.notifications.create({
-        type: 'basic',
-        iconUrl: 'icons/icon48.png',
-        title: '下载已转发',
-        message: `已转发到 ${config.program || 'wget'}: ${downloadItem.url}`
+    if (result && result.status === "success") {
+      // Cancel the browser-managed download
+      try {
+        chrome.downloads.cancel(downloadItem.id, () => {
+          /* ignore errors */
+        });
+      } catch (e) {
+        console.warn("cancel failed", e);
+      }
+      notify(
+        "下载已转发",
+        `使用 ${config.program || "wget"} 下载中: ${truncate(filename, 60)}`
+      );
+      await recordHistory({
+        timestamp: new Date().toISOString(),
+        url: url,
+        filename: filename,
+        program: config.program || "wget",
+        status: "success",
       });
     } else {
-      console.error('Server returned error:', result.message);
+      const msg = (result && result.message) || "未知错误";
+      console.error("Server returned error:", msg);
+      notify("下载转发失败", msg);
+      await recordHistory({
+        timestamp: new Date().toISOString(),
+        url: url,
+        filename: filename,
+        program: config.program || "wget",
+        status: "error",
+        message: msg,
+      });
     }
   } catch (error) {
-    console.error('Error forwarding download:', error);
+    console.error("Error forwarding download:", error);
   }
 });
+
+// --- Lightweight in-extension history (also server side records) ---
+async function recordHistory(entry) {
+  const data = await chrome.storage.local.get(["recentDownloads"]);
+  const history = data.recentDownloads || [];
+  history.unshift(entry);
+  while (history.length > 50) history.pop();
+  chrome.storage.local.set({ recentDownloads: history });
+}
+
+function extractFilenameFromUrl(url) {
+  try {
+    const u = new URL(url);
+    const parts = u.pathname.split("/");
+    return parts[parts.length - 1] || "";
+  } catch (e) {
+    return "";
+  }
+}
+
+function truncate(str, n) {
+  if (!str) return "";
+  return str.length > n ? str.slice(0, n - 1) + "\u2026" : str;
+}

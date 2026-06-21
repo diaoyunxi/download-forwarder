@@ -3,21 +3,23 @@
 <head>
   <meta charset="utf-8">
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      width: 320px;
-      padding: 16px;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      width: 340px;
+      padding: 12px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
       background: #f8f9fa;
+      color: #202124;
+      font-size: 13px;
     }
     .header {
       display: flex;
       align-items: center;
       gap: 8px;
-      margin-bottom: 12px;
+      margin-bottom: 10px;
     }
     .header h1 {
-      font-size: 16px;
+      font-size: 15px;
       font-weight: 600;
       flex: 1;
     }
@@ -27,47 +29,43 @@
       gap: 6px;
       padding: 4px 10px;
       border-radius: 12px;
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 500;
     }
-    .status-badge.connected {
-      background: #e6f4ea;
-      color: #137333;
-    }
-    .status-badge.disconnected {
-      background: #fce8e6;
-      color: #c5221f;
-    }
-    .status-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-    }
+    .status-badge.connected { background: #e6f4ea; color: #137333; }
+    .status-badge.disconnected { background: #fce8e6; color: #c5221f; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; }
     .connected .status-dot { background: #34a853; }
     .disconnected .status-dot { background: #ea4335; }
     .server-info {
       font-size: 11px;
       color: #5f6368;
-      margin-bottom: 16px;
+      margin-bottom: 12px;
+      line-height: 1.4;
+      word-break: break-all;
     }
     .card {
       background: #fff;
       border-radius: 8px;
       padding: 12px;
-      margin-bottom: 12px;
+      margin-bottom: 10px;
       box-shadow: 0 1px 2px rgba(0,0,0,0.06);
     }
     .card-title {
       font-size: 12px;
-      font-weight: 500;
-      color: #5f6368;
+      font-weight: 600;
+      color: #202124;
       margin-bottom: 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
     }
     .toggle-row {
       display: flex;
       align-items: center;
       justify-content: space-between;
     }
+    .toggle-label { font-size: 13px; color: #202124; }
     .toggle {
       width: 44px;
       height: 24px;
@@ -93,49 +91,141 @@
     .toggle.active::after { transform: translateX(20px); }
     .program-grid {
       display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 6px;
     }
     .program-btn {
-      padding: 8px;
+      padding: 8px 4px;
       border: 2px solid #e8eaed;
       border-radius: 6px;
       background: #fff;
       cursor: pointer;
       text-align: center;
-      font-size: 13px;
+      font-size: 12px;
+      font-weight: 500;
       transition: all 0.15s;
+      color: #202124;
     }
     .program-btn:hover { border-color: #1a73e8; }
     .program-btn.selected {
       border-color: #1a73e8;
       background: #e8f0fe;
       color: #1a73e8;
-      font-weight: 500;
     }
     .program-btn.disabled {
       opacity: 0.4;
       pointer-events: none;
     }
+    .program-btn.unavailable {
+      opacity: 0.55;
+      border-style: dashed;
+    }
     .program-icon {
-      font-size: 20px;
-      margin-bottom: 4px;
+      font-size: 16px;
+      margin-bottom: 2px;
+      line-height: 1;
     }
-    .args-input {
-      width: 100%;
-      padding: 8px 10px;
-      border: 1px solid #e8eaed;
-      border-radius: 6px;
-      font-size: 13px;
-      outline: none;
-      margin-top: 10px;
-    }
-    .args-input:focus { border-color: #1a73e8; }
-    .hint {
+    .program-name {
       font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+    .input-label {
+      font-size: 11px;
+      color: #5f6368;
+      margin-top: 10px;
+      margin-bottom: 4px;
+      display: block;
+      font-weight: 500;
+    }
+    .text-input {
+      width: 100%;
+      padding: 7px 10px;
+      border: 1px solid #dadce0;
+      border-radius: 6px;
+      font-size: 12px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .text-input:focus { border-color: #1a73e8; }
+    .hint {
+      font-size: 10px;
       color: #9aa0a6;
-      margin-top: 6px;
+      margin-top: 4px;
       line-height: 1.4;
+    }
+    .section-label {
+      font-size: 11px;
+      color: #80868b;
+      font-weight: 500;
+      display: inline-block;
+    }
+    .history-list {
+      max-height: 180px;
+      overflow-y: auto;
+      margin-top: 4px;
+    }
+    .history-item {
+      padding: 7px 0;
+      border-bottom: 1px solid #f1f3f4;
+      font-size: 11px;
+      line-height: 1.5;
+    }
+    .history-item:last-child { border-bottom: none; }
+    .history-meta {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 3px;
+    }
+    .history-time { color: #80868b; font-size: 10px; }
+    .history-program {
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 8px;
+      font-size: 10px;
+      text-transform: uppercase;
+    }
+    .program-badge-success { background: #e6f4ea; color: #137333; }
+    .program-badge-error { background: #fce8e6; color: #c5221f; }
+    .history-url {
+      color: #1a73e8;
+      word-break: break-all;
+      text-decoration: none;
+      cursor: pointer;
+      display: block;
+    }
+    .history-url:hover { text-decoration: underline; }
+    .history-empty {
+      padding: 14px;
+      text-align: center;
+      color: #9aa0a6;
+      font-size: 11px;
+      font-style: italic;
+    }
+    .icon-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 3px 6px;
+      font-size: 11px;
+      color: #1a73e8;
+      border-radius: 4px;
+      transition: background 0.15s;
+    }
+    .icon-btn:hover { background: #e8f0fe; }
+    .icon-btn.danger { color: #c5221f; }
+    .icon-btn.danger:hover { background: #fce8e6; }
+    .available-chip {
+      display: inline-block;
+      background: #e8f0fe;
+      color: #1a73e8;
+      padding: 1px 6px;
+      border-radius: 8px;
+      font-size: 10px;
+      margin: 2px 2px 2px 0;
+      text-transform: uppercase;
+      font-weight: 600;
     }
   </style>
 </head>
@@ -149,35 +239,68 @@
   </div>
   <div class="server-info" id="server-info">本地服务器未运行</div>
 
+  <!-- 开关 -->
   <div class="card">
     <div class="toggle-row">
-      <span class="card-title">捕获下载</span>
+      <span class="toggle-label">启用下载拦截</span>
       <div class="toggle" id="toggle"></div>
     </div>
   </div>
 
+  <!-- 下载管理器 -->
   <div class="card">
-    <div class="card-title">下载管理器</div>
+    <div class="card-title">
+      <span>下载管理器</span>
+    </div>
     <div class="program-grid" id="program-grid">
       <div class="program-btn" data-program="wget">
-        <div class="program-icon">&#x1F4E5;</div>
-        <div>wget</div>
+        <div class="program-icon">&#x2B07;</div>
+        <div class="program-name">wget</div>
       </div>
       <div class="program-btn" data-program="curl">
         <div class="program-icon">&#x1F310;</div>
-        <div>curl</div>
+        <div class="program-name">curl</div>
+      </div>
+      <div class="program-btn" data-program="gopeed">
+        <div class="program-icon">&#x26A1;</div>
+        <div class="program-name">Gopeed</div>
       </div>
       <div class="program-btn" data-program="idm">
         <div class="program-icon">&#x1F680;</div>
-        <div>IDM</div>
+        <div class="program-name">IDM</div>
       </div>
       <div class="program-btn" data-program="ndm">
-        <div class="program-icon">&#x2B07;</div>
-        <div>NDM</div>
+        <div class="program-icon">&#x1F4E6;</div>
+        <div class="program-name">NDM</div>
       </div>
     </div>
-    <input type="text" class="args-input" id="arguments" placeholder="额外参数（可选）">
-    <div class="hint">例如: -c (断点续传) 或 --limit-rate=1M</div>
+
+    <label class="input-label" for="arguments">额外参数</label>
+    <input type="text" class="text-input" id="arguments" placeholder="例如: -c, --limit-rate=1M">
+    <div class="hint">额外参数会附加到命令末尾（wget / curl / gopeed 支持）</div>
+  </div>
+
+  <!-- 下载目录 -->
+  <div class="card">
+    <div class="card-title">
+      <span>下载目录</span>
+      <span class="section-label" id="server-dir-label"></span>
+    </div>
+    <input type="text" class="text-input" id="download-dir" placeholder="服务器端下载目录">
+    <div class="hint">目录仅对本地服务器有效。更新后会保存到服务器配置中。</div>
+  </div>
+
+  <!-- 历史记录 -->
+  <div class="card">
+    <div class="card-title">
+      <span>近期下载</span>
+      <button class="icon-btn danger" id="clear-history">清空</button>
+    </div>
+    <div id="available-programs"></div>
+    <div class="history-list" id="history-list">
+      <div class="history-empty">暂无下载记录</div>
+    </div>
+    <div class="hint" style="margin-top:6px;" id="count-label"></div>
   </div>
 
   <script src="popup.js"></script>
