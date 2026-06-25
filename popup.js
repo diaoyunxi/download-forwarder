@@ -13,6 +13,12 @@ const downloadDirEl = document.getElementById("download-dir");
 const serverDirLabel = document.getElementById("server-dir-label");
 const availableProgramsEl = document.getElementById("available-programs");
 const countLabel = document.getElementById("count-label");
+const exportJsonBtn = document.getElementById("export-json");
+const exportCsvBtn = document.getElementById("export-csv");
+const statTotalEl = document.getElementById("stat-total");
+const statSuccessEl = document.getElementById("stat-success");
+const statErrorEl = document.getElementById("stat-error");
+const programStatsEl = document.getElementById("program-stats");
 
 let enabled = false;
 let selectedProgram = "wget";
@@ -79,6 +85,14 @@ async function init() {
     if (cfg && cfg.status === "ok" && cfg.download_dir) {
       if (!downloadDirEl.value) downloadDirEl.value = cfg.download_dir;
       serverDirLabel.textContent = "当前: " + cfg.download_dir;
+    }
+  } catch (e) {}
+
+  // Load stats
+  try {
+    const stats = await fetchJSON(LOCAL_SERVER + "/stats");
+    if (stats && stats.status === "ok") {
+      renderStats(stats);
     }
   } catch (e) {}
 }
@@ -232,6 +246,28 @@ clearHistoryBtn.addEventListener("click", async () => {
   } catch (e) {}
   currentHistory = [];
   renderHistory([]);
+  // Reset stats
+  statTotalEl.textContent = "0";
+  statSuccessEl.textContent = "0";
+  statErrorEl.textContent = "0";
+  programStatsEl.innerHTML = "";
+});
+
+// --- Export ---
+function downloadFile(url, filename) {
+  chrome.downloads.download({
+    url: url,
+    filename: filename,
+    saveAs: true,
+  });
+}
+
+exportJsonBtn.addEventListener("click", () => {
+  downloadFile(LOCAL_SERVER + "/export?format=json", "download_history.json");
+});
+
+exportCsvBtn.addEventListener("click", () => {
+  downloadFile(LOCAL_SERVER + "/export?format=csv", "download_history.csv");
 });
 
 // --- Realtime updates ---
@@ -279,6 +315,26 @@ function formatTime(timestamp) {
     return `${y}-${m}-${day} ${hh}:${mm}`;
   } catch (e) {
     return timestamp;
+  }
+}
+
+// --- Stats rendering ---
+function renderStats(stats) {
+  statTotalEl.textContent = stats.total || 0;
+  statSuccessEl.textContent = stats.success || 0;
+  statErrorEl.textContent = stats.error || 0;
+
+  if (stats.by_program && Object.keys(stats.by_program).length > 0) {
+    programStatsEl.innerHTML = Object.entries(stats.by_program)
+      .map(([prog, data]) => {
+        return `<div class="prog-stat-chip">
+          <span class="prog-name">${escapeHtml(prog)}</span>
+          <span class="prog-count">${data.success}/${data.total}</span>
+        </div>`;
+      })
+      .join("");
+  } else {
+    programStatsEl.innerHTML = '<span class="hint">暂无数据</span>';
   }
 }
 

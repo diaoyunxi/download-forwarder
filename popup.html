@@ -227,6 +227,52 @@
       text-transform: uppercase;
       font-weight: 600;
     }
+    .stats-grid {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .stat-item {
+      flex: 1;
+      text-align: center;
+      padding: 8px 4px;
+      background: #f8f9fa;
+      border-radius: 6px;
+    }
+    .stat-value {
+      font-size: 20px;
+      font-weight: 700;
+      color: #202124;
+    }
+    .stat-value.success { color: #137333; }
+    .stat-value.error { color: #c5221f; }
+    .stat-label {
+      font-size: 10px;
+      color: #5f6368;
+      margin-top: 2px;
+    }
+    .program_stats {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+    .prog-stat-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: #f1f3f4;
+      border-radius: 8px;
+      padding: 2px 8px;
+      font-size: 10px;
+      color: #202124;
+    }
+    .prog-stat-chip .prog-name {
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .prog-stat-chip .prog-count {
+      color: #5f6368;
+    }
   </style>
 </head>
 <body>
@@ -290,11 +336,39 @@
     <div class="hint">目录仅对本地服务器有效。更新后会保存到服务器配置中。</div>
   </div>
 
+  <!-- 统计信息 -->
+  <div class="card">
+    <div class="card-title">
+      <span>下载统计</span>
+    </div>
+    <div id="stats-container">
+      <div class="stats-grid">
+        <div class="stat-item">
+          <div class="stat-value" id="stat-total">0</div>
+          <div class="stat-label">总计</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-value success" id="stat-success">0</div>
+          <div class="stat-label">成功</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-value error" id="stat-error">0</div>
+          <div class="stat-label">失败</div>
+        </div>
+      </div>
+      <div id="program-stats" class="program-stats"></div>
+    </div>
+  </div>
+
   <!-- 历史记录 -->
   <div class="card">
     <div class="card-title">
       <span>近期下载</span>
-      <button class="icon-btn danger" id="clear-history">清空</button>
+      <div style="display:flex;gap:4px;">
+        <button class="icon-btn" id="export-json">导出JSON</button>
+        <button class="icon-btn" id="export-csv">导出CSV</button>
+        <button class="icon-btn danger" id="clear-history">清空</button>
+      </div>
     </div>
     <div id="available-programs"></div>
     <div class="history-list" id="history-list">

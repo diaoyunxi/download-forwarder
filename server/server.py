@@ -28,7 +28,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # === Configuration ===
 PORT = 18735
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 DEFAULT_PROGRAMS = ["wget", "curl", "idm", "ndm", "gopeed"]
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".download_forwarder")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
@@ -59,6 +59,8 @@ def load_config():
     data.setdefault("program", "wget")
     data.setdefault("arguments", "")
     data.setdefault("max_history", MAX_HISTORY)
+    data.setdefault("max_retries", 3)
+    data.setdefault("url_rules", [])
     return data
 
 
@@ -156,6 +158,22 @@ def get_filename_from_url(url):
         return "download"
 
 
+def match_url_rule(url, rules):
+    """Match URL against configured rules to determine program"""
+    if not rules:
+        return None
+    for rule in rules:
+        pattern = rule.get("pattern", "")
+        program = rule.get("program", "")
+        if pattern and program:
+            try:
+                if re.search(pattern, url, re.IGNORECASE):
+                    return program
+            except re.error:
+                continue
+    return None
+
+
 class DownloadHandler(BaseHTTPRequestHandler):
     def _send_cors_headers(self):
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -205,6 +223,10 @@ class DownloadHandler(BaseHTTPRequestHandler):
                     pass
             response = {"status": "ok", "logs": logs}
             self.wfile.write(json.dumps(response, ensure_ascii=False).encode("utf-8"))
+        elif self.path.startswith("/export"):
+            self._handle_export()
+        elif self.path.startswith("/stats"):
+            self._handle_stats()
         else:
             self.send_response(404)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -245,6 +267,15 @@ class DownloadHandler(BaseHTTPRequestHandler):
 
         cfg = load_config()
         download_dir = cfg.get("download_dir") or os.path.join(os.path.expanduser("~"), "Downloads")
+        max_retries = cfg.get("max_retries", 3)
+        url_rules = cfg.get("url_rules", [])
+
+        # Apply URL rules to auto-select program
+        matched_program = match_url_rule(url, url_rules)
+        if matched_program:
+            program = matched_program
+            log_message("INFO", f"URL rule matched, using {program}")
+
         try:
             os.makedirs(download_dir, exist_ok=True)
         except OSError as e:
@@ -252,7 +283,18 @@ class DownloadHandler(BaseHTTPRequestHandler):
             self._send_error(f"Cannot create directory: {e}", 500)
             return
 
-        result = self._start_download(url, program, args, filename, download_dir)
+        # Retry logic
+        result = None
+        attempt = 0
+        for attempt in range(max_retries + 1):
+            result = self._start_download(url, program, args, filename, download_dir)
+            if result.get("status") == "success":
+                break
+            if attempt < max_retries:
+                log_message("WARNING", f"Download attempt {attempt + 1} failed, retrying...")
+                time.sleep(1)  # Wait 1 second before retry
+            else:
+                log_message("ERROR", f"All {max_retries + 1} attempts failed")
 
         entry = {
             "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -261,6 +303,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
             "filename": filename or get_filename_from_url(url),
             "status": result.get("status"),
             "message": result.get("message", ""),
+            "retries": attempt if result.get("status") != "success" else 0,
         }
 
         if result.get("status") == "success":
@@ -269,7 +312,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
         else:
             entry["status"] = "error"
             append_history(entry)
-            log_message("ERROR", f"Download failed ({program}): {result.get('message')}")
+            log_message("ERROR", f"Download failed after {attempt + 1} attempts ({program}): {result.get('message')}")
 
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -391,6 +434,74 @@ class DownloadHandler(BaseHTTPRequestHandler):
             commands["ndm"] = ["xdg-open", f"ndm:{url}"]
 
         return commands.get(program)
+
+    def _handle_export(self):
+        """Export history as JSON or CSV"""
+        from urllib.parse import urlparse, parse_qs
+        params = parse_qs(urlparse(self.path).query)
+        fmt = (params.get("format") or ["json"])[0].lower()
+        history = load_history()
+
+        if fmt == "csv":
+            import csv
+            import io
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow(["timestamp", "url", "filename", "program", "status", "message"])
+            for item in history:
+                writer.writerow([
+                    item.get("timestamp", ""),
+                    item.get("url", ""),
+                    item.get("filename", ""),
+                    item.get("program", ""),
+                    item.get("status", ""),
+                    item.get("message", ""),
+                ])
+            content_type = "text/csv; charset=utf-8"
+            body = output.getvalue().encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self._send_cors_headers()
+            self.send_header("Content-Disposition", "attachment; filename=download_history.csv")
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            response = {"status": "ok", "history": history}
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self._send_cors_headers()
+            self.send_header("Content-Disposition", "attachment; filename=download_history.json")
+            self.end_headers()
+            self.wfile.write(json.dumps(response, ensure_ascii=False).encode("utf-8"))
+
+    def _handle_stats(self):
+        """Return download statistics"""
+        history = load_history()
+        total = len(history)
+        success = sum(1 for h in history if h.get("status") == "success")
+        error = total - success
+        by_program = {}
+        for h in history:
+            prog = h.get("program", "unknown")
+            if prog not in by_program:
+                by_program[prog] = {"total": 0, "success": 0, "error": 0}
+            by_program[prog]["total"] += 1
+            if h.get("status") == "success":
+                by_program[prog]["success"] += 1
+            else:
+                by_program[prog]["error"] += 1
+        response = {
+            "status": "ok",
+            "total": total,
+            "success": success,
+            "error": error,
+            "by_program": by_program,
+        }
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self._send_cors_headers()
+        self.end_headers()
+        self.wfile.write(json.dumps(response, ensure_ascii=False).encode("utf-8"))
 
     def _send_error(self, message, code=400):
         self.send_response(code)
