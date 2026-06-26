@@ -28,7 +28,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # === Configuration ===
 PORT = 18735
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 DEFAULT_PROGRAMS = ["wget", "curl", "idm", "ndm", "gopeed"]
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".download_forwarder")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
@@ -39,6 +39,10 @@ MAX_HISTORY = 100
 # Thread-safe history store
 _history_lock = threading.Lock()
 _config_lock = threading.Lock()
+
+# Active downloads tracking
+_active_downloads = 0
+_active_downloads_lock = threading.Lock()
 
 
 def _ensure_config_dir():
@@ -61,6 +65,12 @@ def load_config():
     data.setdefault("max_history", MAX_HISTORY)
     data.setdefault("max_retries", 3)
     data.setdefault("url_rules", [])
+    data.setdefault("filetype_filter_enabled", False)
+    data.setdefault("filetype_filter", "")
+    data.setdefault("blacklist_enabled", False)
+    data.setdefault("url_blacklist", "")
+    data.setdefault("concurrent_limit", 5)
+    data.setdefault("speed_limit", 0)
     return data
 
 
@@ -259,6 +269,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
         program = (data.get("program") or "wget").strip().lower()
         args = (data.get("arguments") or "").strip()
         filename = sanitize_filename(data.get("filename") or "")
+        speed_limit = data.get("speed_limit", 0)
 
         if not url:
             log_message("ERROR", "Download request missing URL")
@@ -269,6 +280,15 @@ class DownloadHandler(BaseHTTPRequestHandler):
         download_dir = cfg.get("download_dir") or os.path.join(os.path.expanduser("~"), "Downloads")
         max_retries = cfg.get("max_retries", 3)
         url_rules = cfg.get("url_rules", [])
+        concurrent_limit = cfg.get("concurrent_limit", 5)
+        speed_limit = speed_limit or cfg.get("speed_limit", 0)
+
+        # Check concurrent download limit
+        active_downloads = self._count_active_downloads()
+        if active_downloads >= concurrent_limit:
+            log_message("WARNING", f"Concurrent download limit reached ({active_downloads}/{concurrent_limit})")
+            self._send_error(f"Concurrent download limit reached ({active_downloads}/{concurrent_limit})", 429)
+            return
 
         # Apply URL rules to auto-select program
         matched_program = match_url_rule(url, url_rules)
@@ -287,8 +307,9 @@ class DownloadHandler(BaseHTTPRequestHandler):
         result = None
         attempt = 0
         for attempt in range(max_retries + 1):
-            result = self._start_download(url, program, args, filename, download_dir)
+            result = self._start_download(url, program, args, filename, download_dir, speed_limit)
             if result.get("status") == "success":
+                self._register_download()
                 break
             if attempt < max_retries:
                 log_message("WARNING", f"Download attempt {attempt + 1} failed, retrying...")
@@ -333,6 +354,24 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 cfg["max_history"] = int(data["max_history"])
             except (TypeError, ValueError):
                 pass
+        if "filetype_filter_enabled" in data:
+            cfg["filetype_filter_enabled"] = bool(data["filetype_filter_enabled"])
+        if "filetype_filter" in data:
+            cfg["filetype_filter"] = str(data["filetype_filter"])
+        if "blacklist_enabled" in data:
+            cfg["blacklist_enabled"] = bool(data["blacklist_enabled"])
+        if "url_blacklist" in data:
+            cfg["url_blacklist"] = str(data["url_blacklist"])
+        if "concurrent_limit" in data:
+            try:
+                cfg["concurrent_limit"] = int(data["concurrent_limit"])
+            except (TypeError, ValueError):
+                pass
+        if "speed_limit" in data:
+            try:
+                cfg["speed_limit"] = int(data["speed_limit"])
+            except (TypeError, ValueError):
+                pass
         save_config(cfg)
         log_message("INFO", "Configuration updated")
         self.send_response(200)
@@ -355,8 +394,8 @@ class DownloadHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps({"status": "ok"}).encode("utf-8"))
 
-    def _start_download(self, url, program, args, filename, download_dir):
-        cmd = self._build_command(url, program, args, filename, download_dir)
+    def _start_download(self, url, program, args, filename, download_dir, speed_limit=0):
+        cmd = self._build_command(url, program, args, filename, download_dir, speed_limit)
 
         if not cmd:
             return {"status": "error", "message": f"Unknown program: {program}"}
@@ -384,7 +423,25 @@ class DownloadHandler(BaseHTTPRequestHandler):
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
-    def _build_command(self, url, program, args, filename, download_dir):
+    def _count_active_downloads(self):
+        """Count currently active downloads"""
+        global _active_downloads
+        with _active_downloads_lock:
+            return _active_downloads
+
+    def _register_download(self):
+        """Register a new download and schedule cleanup"""
+        global _active_downloads
+        with _active_downloads_lock:
+            _active_downloads += 1
+        # Schedule cleanup after 5 minutes (downloads should be done by then)
+        def cleanup():
+            global _active_downloads
+            with _active_downloads_lock:
+                _active_downloads = max(0, _active_downloads - 1)
+        threading.Timer(300, cleanup).start()
+
+    def _build_command(self, url, program, args, filename, download_dir, speed_limit=0):
         arg_list = args.split() if args else []
 
         commands = {}
@@ -392,22 +449,28 @@ class DownloadHandler(BaseHTTPRequestHandler):
         # wget: preserve filename with -O if provided, otherwise use -P for dir
         if filename:
             safe_name = sanitize_filename(filename)
-            commands["wget"] = ["wget", "-c", "-O", os.path.join(download_dir, safe_name), url] + arg_list
+            wget_cmd = ["wget", "-c", "-O", os.path.join(download_dir, safe_name), url]
+            if speed_limit > 0:
+                wget_cmd.extend(["--limit-rate", f"{speed_limit}k"])
+            commands["wget"] = wget_cmd + arg_list
         else:
-            commands["wget"] = ["wget", "-c", "-P", download_dir, url] + arg_list
+            wget_cmd = ["wget", "-c", "-P", download_dir, url]
+            if speed_limit > 0:
+                wget_cmd.extend(["--limit-rate", f"{speed_limit}k"])
+            commands["wget"] = wget_cmd + arg_list
 
         # curl
         if filename:
             safe_name = sanitize_filename(filename)
-            commands["curl"] = [
-                "curl",
-                "-L",
-                "-o",
-                os.path.join(download_dir, safe_name),
-                url,
-            ] + arg_list
+            curl_cmd = ["curl", "-L", "-o", os.path.join(download_dir, safe_name), url]
+            if speed_limit > 0:
+                curl_cmd.extend(["--limit-rate", f"{speed_limit}k"])
+            commands["curl"] = curl_cmd + arg_list
         else:
-            commands["curl"] = ["curl", "-L", "-O", "--output-dir", download_dir, url] + arg_list
+            curl_cmd = ["curl", "-L", "-O", "--output-dir", download_dir, url]
+            if speed_limit > 0:
+                curl_cmd.extend(["--limit-rate", f"{speed_limit}k"])
+            commands["curl"] = curl_cmd + arg_list
 
         # gopeed
         commands["gopeed"] = ["gopeed", "-d", download_dir, url] + arg_list

@@ -336,6 +336,38 @@
     <div class="hint">目录仅对本地服务器有效。更新后会保存到服务器配置中。</div>
   </div>
 
+  <!-- 文件类型过滤 -->
+  <div class="card">
+    <div class="card-title">
+      <span>文件类型过滤</span>
+      <div class="toggle" id="filetype-toggle" style="width:36px;height:20px;"></div>
+    </div>
+    <input type="text" class="text-input" id="filetype-filter" placeholder="例如: zip,rar,7z,pdf,mp4" disabled>
+    <div class="hint">仅拦截指定扩展名的下载，留空则拦截全部</div>
+  </div>
+
+  <!-- URL黑名单 -->
+  <div class="card">
+    <div class="card-title">
+      <span>URL 黑名单</span>
+      <div class="toggle" id="blacklist-toggle" style="width:36px;height:20px;"></div>
+    </div>
+    <textarea class="text-input" id="url-blacklist" placeholder="每行一个正则表达式，例如：&#10;.*\.google\.com&#10;.*ads.*" rows="3" disabled></textarea>
+    <div class="hint">匹配黑名单的 URL 不会被拦截</div>
+  </div>
+
+  <!-- 并发与速度限制 -->
+  <div class="card">
+    <div class="card-title">
+      <span>并发与速度限制</span>
+    </div>
+    <label class="input-label" for="concurrent-limit">最大并发下载数</label>
+    <input type="number" class="text-input" id="concurrent-limit" min="1" max="20" value="5" placeholder="5">
+    <label class="input-label" for="speed-limit">速度限制 (KB/s, 0=不限)</label>
+    <input type="number" class="text-input" id="speed-limit" min="0" value="0" placeholder="0">
+    <div class="hint">速度限制仅对 wget/curl 有效</div>
+  </div>
+
   <!-- 统计信息 -->
   <div class="card">
     <div class="card-title">

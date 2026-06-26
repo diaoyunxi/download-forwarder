@@ -19,11 +19,19 @@ const statTotalEl = document.getElementById("stat-total");
 const statSuccessEl = document.getElementById("stat-success");
 const statErrorEl = document.getElementById("stat-error");
 const programStatsEl = document.getElementById("program-stats");
+const filetypeToggle = document.getElementById("filetype-toggle");
+const filetypeFilter = document.getElementById("filetype-filter");
+const blacklistToggle = document.getElementById("blacklist-toggle");
+const urlBlacklist = document.getElementById("url-blacklist");
+const concurrentLimit = document.getElementById("concurrent-limit");
+const speedLimit = document.getElementById("speed-limit");
 
 let enabled = false;
 let selectedProgram = "wget";
 let availablePrograms = [];
 let currentHistory = [];
+let filetypeFilterEnabled = false;
+let blacklistEnabled = false;
 
 function chromeGet(keys) {
   return new Promise((resolve) => {
@@ -41,13 +49,27 @@ async function init() {
     "serverInfo",
     "recentDownloads",
     "downloadDir",
+    "filetypeFilterEnabled",
+    "filetypeFilter",
+    "blacklistEnabled",
+    "urlBlacklist",
+    "concurrentLimit",
+    "speedLimit",
   ]);
   enabled = data.enabled || false;
   selectedProgram = data.program || "wget";
   argumentsEl.value = data.arguments || "";
   downloadDirEl.value = data.downloadDir || "";
+  filetypeFilterEnabled = data.filetypeFilterEnabled || false;
+  filetypeFilter.value = data.filetypeFilter || "";
+  blacklistEnabled = data.blacklistEnabled || false;
+  urlBlacklist.value = data.urlBlacklist || "";
+  concurrentLimit.value = data.concurrentLimit || 5;
+  speedLimit.value = data.speedLimit || 0;
   updateToggle();
   updateProgramUI();
+  updateFiletypeToggle();
+  updateBlacklistToggle();
   updateServerStatus(data.serverConnected, data.serverInfo);
   renderHistory(data.recentDownloads || []);
 
@@ -179,6 +201,70 @@ downloadDirEl.addEventListener("change", async () => {
     serverDirLabel.textContent = "服务器未连接";
   }
 });
+
+// --- File type filter toggle ---
+function updateFiletypeToggle() {
+  filetypeToggle.classList.toggle("active", filetypeFilterEnabled);
+  filetypeFilter.disabled = !filetypeFilterEnabled;
+}
+filetypeToggle.addEventListener("click", () => {
+  filetypeFilterEnabled = !filetypeFilterEnabled;
+  chrome.storage.local.set({ filetypeFilterEnabled });
+  updateFiletypeToggle();
+});
+filetypeFilter.addEventListener("change", () => {
+  const filter = filetypeFilter.value.trim();
+  chrome.storage.local.set({ filetypeFilter: filter });
+  syncSettingsToServer();
+});
+
+// --- URL blacklist toggle ---
+function updateBlacklistToggle() {
+  blacklistToggle.classList.toggle("active", blacklistEnabled);
+  urlBlacklist.disabled = !blacklistEnabled;
+}
+blacklistToggle.addEventListener("click", () => {
+  blacklistEnabled = !blacklistEnabled;
+  chrome.storage.local.set({ blacklistEnabled });
+  updateBlacklistToggle();
+});
+urlBlacklist.addEventListener("change", () => {
+  const blacklist = urlBlacklist.value.trim();
+  chrome.storage.local.set({ urlBlacklist: blacklist });
+  syncSettingsToServer();
+});
+
+// --- Concurrent & speed limit ---
+concurrentLimit.addEventListener("change", () => {
+  const limit = parseInt(concurrentLimit.value) || 5;
+  chrome.storage.local.set({ concurrentLimit: limit });
+  syncSettingsToServer();
+});
+speedLimit.addEventListener("change", () => {
+  const limit = parseInt(speedLimit.value) || 0;
+  chrome.storage.local.set({ speedLimit: limit });
+  syncSettingsToServer();
+});
+
+async function syncSettingsToServer() {
+  try {
+    await fetch(LOCAL_SERVER + "/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        filetype_filter_enabled: filetypeFilterEnabled,
+        filetype_filter: filetypeFilter.value.trim(),
+        blacklist_enabled: blacklistEnabled,
+        url_blacklist: urlBlacklist.value.trim(),
+        concurrent_limit: parseInt(concurrentLimit.value) || 5,
+        speed_limit: parseInt(speedLimit.value) || 0,
+      }),
+      signal: AbortSignal.timeout(3000),
+    });
+  } catch (e) {
+    console.warn("Failed to sync settings to server", e);
+  }
+}
 
 // --- Status / info ---
 function updateServerStatus(connected, info) {

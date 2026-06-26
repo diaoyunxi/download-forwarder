@@ -81,6 +81,12 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
       "enabled",
       "program",
       "arguments",
+      "filetypeFilterEnabled",
+      "filetypeFilter",
+      "blacklistEnabled",
+      "urlBlacklist",
+      "concurrentLimit",
+      "speedLimit",
     ]);
 
     if (!config.enabled || !serverConnected) {
@@ -93,6 +99,33 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
       return;
     }
 
+    // File type filter check
+    if (config.filetypeFilterEnabled && config.filetypeFilter) {
+      const filename = downloadItem.filename || extractFilenameFromUrl(url) || "";
+      const ext = filename.split('.').pop()?.toLowerCase() || "";
+      const allowedTypes = config.filetypeFilter.split(',').map(t => t.trim().toLowerCase()).filter(t => t);
+      if (allowedTypes.length > 0 && !allowedTypes.includes(ext)) {
+        console.log(`Skipping download: file type .${ext} not in filter list`);
+        return;
+      }
+    }
+
+    // URL blacklist check
+    if (config.blacklistEnabled && config.urlBlacklist) {
+      const blacklistLines = config.urlBlacklist.split('\n').map(l => l.trim()).filter(l => l);
+      for (const pattern of blacklistLines) {
+        try {
+          const regex = new RegExp(pattern, 'i');
+          if (regex.test(url)) {
+            console.log(`Skipping download: URL matches blacklist pattern: ${pattern}`);
+            return;
+          }
+        } catch (e) {
+          console.warn(`Invalid regex pattern in blacklist: ${pattern}`);
+        }
+      }
+    }
+
     const filename =
       downloadItem.filename ||
       extractFilenameFromUrl(url) ||
@@ -103,6 +136,8 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
       filename: filename,
       program: config.program || "wget",
       arguments: config.arguments || "",
+      speed_limit: config.speedLimit || 0,
+      concurrent_limit: config.concurrentLimit || 5,
     };
 
     let result;
