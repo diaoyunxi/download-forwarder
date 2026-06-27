@@ -28,7 +28,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # === Configuration ===
 PORT = 18735
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 DEFAULT_PROGRAMS = ["wget", "curl", "idm", "ndm", "gopeed"]
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".download_forwarder")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
@@ -69,6 +69,8 @@ def load_config():
     data.setdefault("filetype_filter", "")
     data.setdefault("blacklist_enabled", False)
     data.setdefault("url_blacklist", "")
+    data.setdefault("whitelist_enabled", False)
+    data.setdefault("url_whitelist", "")
     data.setdefault("concurrent_limit", 5)
     data.setdefault("speed_limit", 0)
     return data
@@ -195,57 +197,68 @@ class DownloadHandler(BaseHTTPRequestHandler):
         self._send_cors_headers()
         self.end_headers()
 
-    def do_GET(self):
-        """Health check, info, history, config endpoints"""
-        self.send_response(200)
+    def _send_json(self, payload, status=200):
+        """Helper: send a JSON response with CORS headers."""
+        self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self._send_cors_headers()
         self.end_headers()
+        self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
 
+    def do_GET(self):
+        """Health check, info, history, config endpoints"""
         if self.path == "/ping" or self.path.startswith("/ping?"):
-            response = {
+            self._send_json({
                 "status": "ok",
                 "message": "Download Forwarder server is running",
                 "version": VERSION,
                 "platform": platform.system(),
                 "available_programs": detect_available_programs(),
-            }
-            self.wfile.write(json.dumps(response, ensure_ascii=False).encode("utf-8"))
+            })
         elif self.path == "/history" or self.path.startswith("/history?"):
-            response = {
+            self._send_json({
                 "status": "ok",
                 "history": load_history(),
-            }
-            self.wfile.write(json.dumps(response, ensure_ascii=False).encode("utf-8"))
+            })
         elif self.path == "/config" or self.path.startswith("/config?"):
             cfg = load_config()
             cfg["status"] = "ok"
             cfg["available_programs"] = detect_available_programs()
-            self.wfile.write(json.dumps(cfg, ensure_ascii=False).encode("utf-8"))
+            self._send_json(cfg)
         elif self.path == "/logs" or self.path.startswith("/logs?"):
+            from urllib.parse import urlparse, parse_qs
+            params = parse_qs(urlparse(self.path).query)
+            try:
+                limit = int((params.get("limit") or ["50"])[0])
+            except (TypeError, ValueError):
+                limit = 50
+            limit = max(1, min(limit, 500))
             logs = []
             if os.path.exists(LOG_FILE):
                 try:
                     with open(LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
                         lines = f.readlines()
-                        logs = lines[-50:]
+                        logs = lines[-limit:]
                 except OSError:
                     pass
-            response = {"status": "ok", "logs": logs}
-            self.wfile.write(json.dumps(response, ensure_ascii=False).encode("utf-8"))
+            self._send_json({"status": "ok", "logs": logs, "count": len(logs)})
         elif self.path.startswith("/export"):
             self._handle_export()
         elif self.path.startswith("/stats"):
             self._handle_stats()
         else:
-            self.send_response(404)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self._send_cors_headers()
-            self.end_headers()
-            self.wfile.write(json.dumps({"status": "error", "message": "Not found"}).encode("utf-8"))
+            self._send_json({"status": "error", "message": "Not found"}, status=404)
 
     def do_POST(self):
         """Receive download / config update / history clear requests"""
+        # Routes that don't require a JSON body
+        if self.path.startswith("/config/reset") or self.path.startswith("/history/clear"):
+            if self.path.startswith("/config/reset"):
+                self._handle_config_reset()
+            else:
+                self._handle_history_clear()
+            return
+
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length)
 
@@ -259,8 +272,6 @@ class DownloadHandler(BaseHTTPRequestHandler):
             self._handle_download(data)
         elif self.path.startswith("/config"):
             self._handle_config_update(data)
-        elif self.path.startswith("/history/clear"):
-            self._handle_history_clear()
         else:
             self._send_error("Not found", 404)
 
@@ -270,6 +281,8 @@ class DownloadHandler(BaseHTTPRequestHandler):
         args = (data.get("arguments") or "").strip()
         filename = sanitize_filename(data.get("filename") or "")
         speed_limit = data.get("speed_limit", 0)
+        is_manual = bool(data.get("manual", False))
+        source = (data.get("source") or ("manual" if is_manual else "auto")).strip()
 
         if not url:
             log_message("ERROR", "Download request missing URL")
@@ -280,8 +293,72 @@ class DownloadHandler(BaseHTTPRequestHandler):
         download_dir = cfg.get("download_dir") or os.path.join(os.path.expanduser("~"), "Downloads")
         max_retries = cfg.get("max_retries", 3)
         url_rules = cfg.get("url_rules", [])
-        concurrent_limit = cfg.get("concurrent_limit", 5)
+        # Honor client-supplied concurrent_limit if present (extension sends its UI value),
+        # otherwise fall back to the server-side configured limit.
+        try:
+            client_concurrent = int(data.get("concurrent_limit", 0))
+        except (TypeError, ValueError):
+            client_concurrent = 0
+        concurrent_limit = client_concurrent or cfg.get("concurrent_limit", 5)
         speed_limit = speed_limit or cfg.get("speed_limit", 0)
+
+        # Server-side filter enforcement (auto downloads only;
+        # manual/context-menu/shortcut bypass these so users can always force a download)
+        if not is_manual and source == "auto":
+            # Filetype filter
+            if cfg.get("filetype_filter_enabled") and cfg.get("filetype_filter"):
+                allowed_exts = [
+                    e.strip().lower()
+                    for e in cfg["filetype_filter"].split(",")
+                    if e.strip()
+                ]
+                candidate_name = filename or get_filename_from_url(url)
+                ext = (
+                    candidate_name.rsplit(".", 1)[-1].lower()
+                    if "." in candidate_name
+                    else ""
+                )
+                if allowed_exts and ext not in allowed_exts:
+                    log_message("INFO", f"Skipped (filetype filter): .{ext} not in {allowed_exts}")
+                    self._send_error(f"File type .{ext} not allowed by filter", 403)
+                    return
+
+            # Whitelist (only intercept these)
+            if cfg.get("whitelist_enabled") and cfg.get("url_whitelist"):
+                patterns = [
+                    p.strip()
+                    for p in cfg["url_whitelist"].splitlines()
+                    if p.strip()
+                ]
+                if patterns:
+                    allowed = False
+                    for pat in patterns:
+                        try:
+                            if re.search(pat, url, re.IGNORECASE):
+                                allowed = True
+                                break
+                        except re.error:
+                            continue
+                    if not allowed:
+                        log_message("INFO", f"Skipped (whitelist): {url}")
+                        self._send_error("URL not in whitelist", 403)
+                        return
+
+            # Blacklist (never intercept these)
+            if cfg.get("blacklist_enabled") and cfg.get("url_blacklist"):
+                patterns = [
+                    p.strip()
+                    for p in cfg["url_blacklist"].splitlines()
+                    if p.strip()
+                ]
+                for pat in patterns:
+                    try:
+                        if re.search(pat, url, re.IGNORECASE):
+                            log_message("INFO", f"Skipped (blacklist): {url}")
+                            self._send_error("URL matches blacklist", 403)
+                            return
+                    except re.error:
+                        continue
 
         # Check concurrent download limit
         active_downloads = self._count_active_downloads()
@@ -325,6 +402,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
             "status": result.get("status"),
             "message": result.get("message", ""),
             "retries": attempt if result.get("status") != "success" else 0,
+            "source": source,
         }
 
         if result.get("status") == "success":
@@ -362,6 +440,10 @@ class DownloadHandler(BaseHTTPRequestHandler):
             cfg["blacklist_enabled"] = bool(data["blacklist_enabled"])
         if "url_blacklist" in data:
             cfg["url_blacklist"] = str(data["url_blacklist"])
+        if "whitelist_enabled" in data:
+            cfg["whitelist_enabled"] = bool(data["whitelist_enabled"])
+        if "url_whitelist" in data:
+            cfg["url_whitelist"] = str(data["url_whitelist"])
         if "concurrent_limit" in data:
             try:
                 cfg["concurrent_limit"] = int(data["concurrent_limit"])
@@ -393,6 +475,38 @@ class DownloadHandler(BaseHTTPRequestHandler):
         self._send_cors_headers()
         self.end_headers()
         self.wfile.write(json.dumps({"status": "ok"}).encode("utf-8"))
+
+    def _handle_config_reset(self):
+        """Reset server-side config to defaults (download_dir, filters, limits all reset)"""
+        try:
+            default_cfg = {
+                "download_dir": os.path.join(os.path.expanduser("~"), "Downloads"),
+                "program": "wget",
+                "arguments": "",
+                "max_history": MAX_HISTORY,
+                "max_retries": 3,
+                "url_rules": [],
+                "filetype_filter_enabled": False,
+                "filetype_filter": "",
+                "blacklist_enabled": False,
+                "url_blacklist": "",
+                "whitelist_enabled": False,
+                "url_whitelist": "",
+                "concurrent_limit": 5,
+                "speed_limit": 0,
+            }
+            save_config(default_cfg)
+            log_message("INFO", "Server config reset to defaults")
+        except OSError as e:
+            self._send_error(f"Reset failed: {e}", 500)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self._send_cors_headers()
+        self.end_headers()
+        self.wfile.write(
+            json.dumps({"status": "ok", "message": "Config reset"}).encode("utf-8")
+        )
 
     def _start_download(self, url, program, args, filename, download_dir, speed_limit=0):
         cmd = self._build_command(url, program, args, filename, download_dir, speed_limit)

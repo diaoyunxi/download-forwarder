@@ -1,6 +1,8 @@
 // Download Forwarder - Popup UI
 const LOCAL_SERVER = "http://127.0.0.1:18735";
+const EXT_VERSION = "1.4.0";
 
+// --- Element refs ---
 const toggleEl = document.getElementById("toggle");
 const statusEl = document.getElementById("status");
 const statusTextEl = document.getElementById("status-text");
@@ -23,15 +25,37 @@ const filetypeToggle = document.getElementById("filetype-toggle");
 const filetypeFilter = document.getElementById("filetype-filter");
 const blacklistToggle = document.getElementById("blacklist-toggle");
 const urlBlacklist = document.getElementById("url-blacklist");
+const whitelistToggle = document.getElementById("whitelist-toggle");
+const urlWhitelist = document.getElementById("url-whitelist");
 const concurrentLimit = document.getElementById("concurrent-limit");
 const speedLimit = document.getElementById("speed-limit");
+const themeBtn = document.getElementById("theme-btn");
+const manualUrlEl = document.getElementById("manual-url");
+const manualForwardBtn = document.getElementById("manual-forward-btn");
+const historySearchEl = document.getElementById("history-search");
+const refreshLogsBtn = document.getElementById("refresh-logs");
+const logsBox = document.getElementById("logs-box");
+const backupBtn = document.getElementById("backup-btn");
+const restoreBtn = document.getElementById("restore-btn");
+const resetBtn = document.getElementById("reset-btn");
+const restoreModal = document.getElementById("restore-modal");
+const restoreTextarea = document.getElementById("restore-textarea");
+const restoreCancel = document.getElementById("restore-cancel");
+const restoreApply = document.getElementById("restore-apply");
+const aboutServerEl = document.getElementById("about-server");
+const aboutPlatformEl = document.getElementById("about-platform");
+const aboutProgramsEl = document.getElementById("about-programs");
 
+// --- State ---
 let enabled = false;
 let selectedProgram = "wget";
 let availablePrograms = [];
 let currentHistory = [];
 let filetypeFilterEnabled = false;
 let blacklistEnabled = false;
+let whitelistEnabled = false;
+let darkMode = false;
+let historySearchQuery = "";
 
 function chromeGet(keys) {
   return new Promise((resolve) => {
@@ -53,8 +77,11 @@ async function init() {
     "filetypeFilter",
     "blacklistEnabled",
     "urlBlacklist",
+    "whitelistEnabled",
+    "urlWhitelist",
     "concurrentLimit",
     "speedLimit",
+    "darkMode",
   ]);
   enabled = data.enabled || false;
   selectedProgram = data.program || "wget";
@@ -64,14 +91,32 @@ async function init() {
   filetypeFilter.value = data.filetypeFilter || "";
   blacklistEnabled = data.blacklistEnabled || false;
   urlBlacklist.value = data.urlBlacklist || "";
+  whitelistEnabled = data.whitelistEnabled || false;
+  urlWhitelist.value = data.urlWhitelist || "";
   concurrentLimit.value = data.concurrentLimit || 5;
   speedLimit.value = data.speedLimit || 0;
+  darkMode = data.darkMode || false;
+
+  applyTheme();
   updateToggle();
   updateProgramUI();
   updateFiletypeToggle();
   updateBlacklistToggle();
+  updateWhitelistToggle();
   updateServerStatus(data.serverConnected, data.serverInfo);
   renderHistory(data.recentDownloads || []);
+  updateAbout(data.serverInfo);
+
+  // Tell background that popup opened, get live state
+  try {
+    const live = await chrome.runtime.sendMessage({ type: "popup-opened" });
+    if (live && live.serverConnected) {
+      updateServerStatus(true, live.serverInfo);
+      updateAbout(live.serverInfo);
+    }
+  } catch (e) {
+    /* background may be sleeping */
+  }
 
   // Try fetching server-side info
   try {
@@ -82,6 +127,11 @@ async function init() {
       updateServerStatus(true, {
         version: info.version || "1.0.0",
         platform: info.platform || "unknown",
+        available_programs: availablePrograms,
+      });
+      updateAbout({
+        version: info.version,
+        platform: info.platform,
         available_programs: availablePrograms,
       });
     }
@@ -143,6 +193,29 @@ function mergeHistory(ext, server) {
   return combined.slice(0, 50);
 }
 
+// --- Theme ---
+function applyTheme() {
+  document.body.classList.toggle("dark", darkMode);
+  themeBtn.textContent = darkMode ? "\u2600\uFE0F" : "\u{1F313}";
+}
+themeBtn.addEventListener("click", () => {
+  darkMode = !darkMode;
+  chrome.storage.local.set({ darkMode });
+  applyTheme();
+});
+
+// --- Tabs ---
+document.querySelectorAll(".tab").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+    document
+      .querySelectorAll(".tab-panel")
+      .forEach((p) => p.classList.remove("active"));
+    tab.classList.add("active");
+    document.getElementById("tab-" + tab.dataset.tab).classList.add("active");
+  });
+});
+
 // --- Toggle ---
 function updateToggle() {
   toggleEl.classList.toggle("active", enabled);
@@ -154,12 +227,20 @@ toggleEl.addEventListener("click", () => {
   updateProgramUI();
 });
 
+// Listen for toggle events from shortcut/menu
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg && msg.type === "interception-toggled") {
+    enabled = !!msg.enabled;
+    updateToggle();
+    updateProgramUI();
+  }
+});
+
 // --- Program selection ---
 function updateProgramUI() {
   document.querySelectorAll(".program-btn").forEach((btn) => {
     btn.classList.toggle("selected", btn.dataset.program === selectedProgram);
     btn.classList.toggle("disabled", !enabled);
-    // Mark programs not detected by server as "unavailable" hint
     if (
       availablePrograms.length > 0 &&
       !availablePrograms.includes(btn.dataset.program)
@@ -234,6 +315,22 @@ urlBlacklist.addEventListener("change", () => {
   syncSettingsToServer();
 });
 
+// --- URL whitelist toggle ---
+function updateWhitelistToggle() {
+  whitelistToggle.classList.toggle("active", whitelistEnabled);
+  urlWhitelist.disabled = !whitelistEnabled;
+}
+whitelistToggle.addEventListener("click", () => {
+  whitelistEnabled = !whitelistEnabled;
+  chrome.storage.local.set({ whitelistEnabled });
+  updateWhitelistToggle();
+});
+urlWhitelist.addEventListener("change", () => {
+  const whitelist = urlWhitelist.value.trim();
+  chrome.storage.local.set({ urlWhitelist: whitelist });
+  syncSettingsToServer();
+});
+
 // --- Concurrent & speed limit ---
 concurrentLimit.addEventListener("change", () => {
   const limit = parseInt(concurrentLimit.value) || 5;
@@ -256,6 +353,8 @@ async function syncSettingsToServer() {
         filetype_filter: filetypeFilter.value.trim(),
         blacklist_enabled: blacklistEnabled,
         url_blacklist: urlBlacklist.value.trim(),
+        whitelist_enabled: whitelistEnabled,
+        url_whitelist: urlWhitelist.value.trim(),
         concurrent_limit: parseInt(concurrentLimit.value) || 5,
         speed_limit: parseInt(speedLimit.value) || 0,
       }),
@@ -265,6 +364,33 @@ async function syncSettingsToServer() {
     console.warn("Failed to sync settings to server", e);
   }
 }
+
+// --- Manual forward ---
+manualForwardBtn.addEventListener("click", async () => {
+  const url = manualUrlEl.value.trim();
+  if (!url) {
+    manualUrlEl.focus();
+    return;
+  }
+  manualForwardBtn.disabled = true;
+  try {
+    const resp = await chrome.runtime.sendMessage({
+      type: "manual-forward",
+      url: url,
+      filename: "",
+    });
+    if (resp && resp.status === "success") {
+      manualUrlEl.value = "";
+    }
+  } catch (e) {
+    console.warn("manual forward failed", e);
+  } finally {
+    manualForwardBtn.disabled = false;
+  }
+});
+manualUrlEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") manualForwardBtn.click();
+});
 
 // --- Status / info ---
 function updateServerStatus(connected, info) {
@@ -281,7 +407,7 @@ function updateServerStatus(connected, info) {
 
   if (info && Array.isArray(info.available_programs) && info.available_programs.length > 0) {
     const chips = info.available_programs
-      .map((p) => `<span class="available-chip">${p}</span>`)
+      .map((p) => `<span class="available-chip">${escapeHtml(p)}</span>`)
       .join("");
     availableProgramsEl.innerHTML =
       '<div class="hint" style="margin-bottom:6px;">已检测到:</div>' + chips;
@@ -291,38 +417,79 @@ function updateServerStatus(connected, info) {
   }
 }
 
+function updateAbout(info) {
+  // Extension version is always known locally
+  const aboutVersionEl = document.getElementById("about-version");
+  if (aboutVersionEl) aboutVersionEl.textContent = EXT_VERSION;
+  if (info && info.version) {
+    aboutServerEl.textContent = "v" + info.version;
+    aboutPlatformEl.textContent = info.platform || "-";
+    aboutProgramsEl.textContent =
+      info.available_programs && info.available_programs.length
+        ? info.available_programs.join(", ")
+        : "-";
+  }
+}
+
 // --- History rendering ---
 function renderHistory(items) {
   currentHistory = items || [];
-  if (!currentHistory.length) {
+  applyHistoryFilter();
+}
+
+function applyHistoryFilter() {
+  const q = historySearchQuery.trim().toLowerCase();
+  const filtered = q
+    ? currentHistory.filter((item) => {
+        const u = (item.url || "").toLowerCase();
+        const f = (item.filename || "").toLowerCase();
+        return u.includes(q) || f.includes(q);
+      })
+    : currentHistory;
+
+  if (!filtered.length) {
     historyListEl.innerHTML = '<div class="history-empty">暂无下载记录</div>';
-    countLabel.textContent = "";
+    countLabel.textContent = currentHistory.length
+      ? `共 ${currentHistory.length} 条 (无匹配)`
+      : "";
     return;
   }
-  historyListEl.innerHTML = currentHistory
+  historyListEl.innerHTML = filtered
     .slice(0, 20)
     .map((item) => {
       const success = item.status === "success";
       const programName = (item.program || "?").toUpperCase();
       const displayUrl = item.url || "";
       const time = formatTime(item.timestamp);
+      const sourceLabel = item.source
+        ? `<span class="history-source">${escapeHtml(item.source)}</span>`
+        : "";
       return `<div class="history-item">
         <div class="history-meta">
           <span class="history-program ${
             success ? "program-badge-success" : "program-badge-error"
           }">${programName}</span>
-          <span class="history-time">${time}</span>
+          <span class="history-time">${time}${sourceLabel}</span>
         </div>
-        <a class="history-url" href="${displayUrl}" target="_blank" rel="noopener">${escapeHtml(
+        <a class="history-url" href="${escapeHtml(displayUrl)}" target="_blank" rel="noopener">${escapeHtml(
         truncate(item.filename || displayUrl, 60)
       )}</a>
       </div>`;
     })
     .join("");
-  countLabel.textContent = `共 ${currentHistory.length} 条 (显示最近20条)`;
+  countLabel.textContent = `共 ${currentHistory.length} 条 (显示 ${Math.min(
+    20,
+    filtered.length
+  )} 条)`;
 }
 
+historySearchEl.addEventListener("input", () => {
+  historySearchQuery = historySearchEl.value;
+  applyHistoryFilter();
+});
+
 clearHistoryBtn.addEventListener("click", async () => {
+  if (!confirm("确定清空所有下载历史吗？")) return;
   chrome.storage.local.set({ recentDownloads: [] });
   try {
     await fetch(LOCAL_SERVER + "/history/clear", {
@@ -332,7 +499,6 @@ clearHistoryBtn.addEventListener("click", async () => {
   } catch (e) {}
   currentHistory = [];
   renderHistory([]);
-  // Reset stats
   statTotalEl.textContent = "0";
   statSuccessEl.textContent = "0";
   statErrorEl.textContent = "0";
@@ -362,10 +528,15 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (changes.serverConnected || changes.serverInfo) {
     chromeGet(["serverConnected", "serverInfo"]).then((data) => {
       updateServerStatus(data.serverConnected, data.serverInfo);
+      updateAbout(data.serverInfo);
     });
   }
   if (changes.recentDownloads) {
     renderHistory(changes.recentDownloads.newValue || []);
+  }
+  if (changes.darkMode) {
+    darkMode = !!changes.darkMode.newValue;
+    applyTheme();
   }
 });
 
@@ -388,6 +559,7 @@ function formatTime(timestamp) {
   if (!timestamp) return "";
   try {
     const d = new Date(timestamp);
+    if (isNaN(d.getTime())) return String(timestamp);
     const now = new Date();
     const diff = Math.floor((now - d) / 1000);
     if (diff < 60) return "刚刚";
@@ -423,6 +595,154 @@ function renderStats(stats) {
     programStatsEl.innerHTML = '<span class="hint">暂无数据</span>';
   }
 }
+
+// --- Server logs ---
+refreshLogsBtn.addEventListener("click", async () => {
+  logsBox.classList.add("empty");
+  logsBox.textContent = "加载中…";
+  try {
+    const resp = await fetchJSON(LOCAL_SERVER + "/logs?limit=80");
+    if (resp && resp.status === "ok") {
+      const lines = resp.logs || [];
+      if (!lines.length) {
+        logsBox.textContent = "（暂无日志）";
+        logsBox.classList.add("empty");
+      } else {
+        logsBox.classList.remove("empty");
+        logsBox.textContent = lines.join("");
+      }
+      return;
+    }
+    logsBox.textContent = "（服务器返回异常）";
+  } catch (e) {
+    logsBox.textContent = "（无法连接服务器）";
+  }
+});
+
+// --- Backup / Restore ---
+backupBtn.addEventListener("click", async () => {
+  // Pull extension storage + server config
+  const ext = await chrome.storage.local.get(null);
+  let serverCfg = null;
+  try {
+    serverCfg = await fetchJSON(LOCAL_SERVER + "/config");
+  } catch (e) {
+    /* server may be down */
+  }
+  const payload = {
+    version: EXT_VERSION,
+    exported_at: new Date().toISOString(),
+    extension: ext,
+    server: serverCfg && serverCfg.status === "ok" ? serverCfg : null,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {
+    type: "application/json",
+  });
+  const url = URL.createObjectURL(blob);
+  const filename = `download-forwarder-backup-${new Date()
+    .toISOString()
+    .slice(0, 10)}.json`;
+  chrome.downloads.download({ url, filename, saveAs: true });
+});
+
+restoreBtn.addEventListener("click", () => {
+  restoreTextarea.value = "";
+  restoreModal.classList.add("active");
+});
+
+restoreCancel.addEventListener("click", () => {
+  restoreModal.classList.remove("active");
+});
+
+restoreApply.addEventListener("click", async () => {
+  let data;
+  try {
+    data = JSON.parse(restoreTextarea.value);
+  } catch (e) {
+    alert("JSON 解析失败，请检查格式");
+    return;
+  }
+  if (!data || typeof data !== "object") {
+    alert("无效的备份内容");
+    return;
+  }
+
+  // Restore extension settings
+  if (data.extension && typeof data.extension === "object") {
+    // Filter to known keys
+    const allowed = [
+      "enabled",
+      "program",
+      "arguments",
+      "downloadDir",
+      "filetypeFilterEnabled",
+      "filetypeFilter",
+      "blacklistEnabled",
+      "urlBlacklist",
+      "whitelistEnabled",
+      "urlWhitelist",
+      "concurrentLimit",
+      "speedLimit",
+      "darkMode",
+    ];
+    const toSet = {};
+    for (const k of allowed) {
+      if (k in data.extension) toSet[k] = data.extension[k];
+    }
+    await chrome.storage.local.set(toSet);
+  }
+
+  // Restore server config
+  if (data.server && data.server.status === "ok") {
+    const s = data.server;
+    const body = {};
+    const fields = [
+      "download_dir",
+      "program",
+      "arguments",
+      "filetype_filter_enabled",
+      "filetype_filter",
+      "blacklist_enabled",
+      "url_blacklist",
+      "whitelist_enabled",
+      "url_whitelist",
+      "concurrent_limit",
+      "speed_limit",
+    ];
+    for (const f of fields) {
+      if (f in s) body[f] = s[f];
+    }
+    try {
+      await fetch(LOCAL_SERVER + "/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(3000),
+      });
+    } catch (e) {
+      console.warn("server restore failed", e);
+    }
+  }
+
+  restoreModal.classList.remove("active");
+  alert("设置已应用，弹窗将重新加载");
+  location.reload();
+});
+
+resetBtn.addEventListener("click", async () => {
+  if (!confirm("确定恢复默认设置吗？这会清除扩展所有自定义配置。")) return;
+  await chrome.storage.local.clear();
+  try {
+    await fetch(LOCAL_SERVER + "/config/reset", {
+      method: "POST",
+      signal: AbortSignal.timeout(3000),
+    });
+  } catch (e) {
+    /* server may not support */
+  }
+  alert("已重置，弹窗将重新加载");
+  location.reload();
+});
 
 // Start
 init();

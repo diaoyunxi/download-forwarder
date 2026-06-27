@@ -4,13 +4,48 @@
   <meta charset="utf-8">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #f8f9fa;
+      --card-bg: #fff;
+      --text: #202124;
+      --text-secondary: #5f6368;
+      --text-tertiary: #80868b;
+      --border: #dadce0;
+      --border-soft: #e8eaed;
+      --accent: #1a73e8;
+      --accent-bg: #e8f0fe;
+      --success: #137333;
+      --success-bg: #e6f4ea;
+      --error: #c5221f;
+      --error-bg: #fce8e6;
+      --hint-bg: #f1f3f4;
+      --shadow: 0 1px 2px rgba(0,0,0,0.06);
+    }
+    body.dark {
+      --bg: #202124;
+      --card-bg: #2d2e31;
+      --text: #e8eaed;
+      --text-secondary: #bdc1c6;
+      --text-tertiary: #9aa0a6;
+      --border: #5f6368;
+      --border-soft: #3c4043;
+      --accent: #8ab4f8;
+      --accent-bg: #2a3b53;
+      --success: #81c995;
+      --success-bg: #1e3a2a;
+      --error: #f28b82;
+      --error-bg: #3a1f1f;
+      --hint-bg: #3c4043;
+      --shadow: 0 1px 2px rgba(0,0,0,0.4);
+    }
     body {
-      width: 340px;
+      width: 360px;
       padding: 12px;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
-      background: #f8f9fa;
-      color: #202124;
+      background: var(--bg);
+      color: var(--text);
       font-size: 13px;
+      transition: background 0.2s, color 0.2s;
     }
     .header {
       display: flex;
@@ -23,6 +58,26 @@
       font-weight: 600;
       flex: 1;
     }
+    .header-actions {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+    }
+    .icon-circle-btn {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      color: var(--text-secondary);
+      transition: background 0.15s;
+    }
+    .icon-circle-btn:hover { background: var(--accent-bg); color: var(--accent); }
     .status-badge {
       display: flex;
       align-items: center;
@@ -32,29 +87,29 @@
       font-size: 11px;
       font-weight: 500;
     }
-    .status-badge.connected { background: #e6f4ea; color: #137333; }
-    .status-badge.disconnected { background: #fce8e6; color: #c5221f; }
+    .status-badge.connected { background: var(--success-bg); color: var(--success); }
+    .status-badge.disconnected { background: var(--error-bg); color: var(--error); }
     .status-dot { width: 8px; height: 8px; border-radius: 50%; }
-    .connected .status-dot { background: #34a853; }
-    .disconnected .status-dot { background: #ea4335; }
+    .connected .status-dot { background: var(--success); }
+    .disconnected .status-dot { background: var(--error); }
     .server-info {
       font-size: 11px;
-      color: #5f6368;
+      color: var(--text-secondary);
       margin-bottom: 12px;
       line-height: 1.4;
       word-break: break-all;
     }
     .card {
-      background: #fff;
+      background: var(--card-bg);
       border-radius: 8px;
       padding: 12px;
       margin-bottom: 10px;
-      box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+      box-shadow: var(--shadow);
     }
     .card-title {
       font-size: 12px;
       font-weight: 600;
-      color: #202124;
+      color: var(--text);
       margin-bottom: 10px;
       display: flex;
       justify-content: space-between;
@@ -65,17 +120,18 @@
       align-items: center;
       justify-content: space-between;
     }
-    .toggle-label { font-size: 13px; color: #202124; }
+    .toggle-label { font-size: 13px; color: var(--text); }
     .toggle {
       width: 44px;
       height: 24px;
-      background: #dadce0;
+      background: var(--border);
       border-radius: 12px;
       cursor: pointer;
       position: relative;
       transition: background 0.2s;
+      flex-shrink: 0;
     }
-    .toggle.active { background: #1a73e8; }
+    .toggle.active { background: var(--accent); }
     .toggle::after {
       content: '';
       position: absolute;
@@ -96,21 +152,21 @@
     }
     .program-btn {
       padding: 8px 4px;
-      border: 2px solid #e8eaed;
+      border: 2px solid var(--border-soft);
       border-radius: 6px;
-      background: #fff;
+      background: var(--card-bg);
       cursor: pointer;
       text-align: center;
       font-size: 12px;
       font-weight: 500;
       transition: all 0.15s;
-      color: #202124;
+      color: var(--text);
     }
-    .program-btn:hover { border-color: #1a73e8; }
+    .program-btn:hover { border-color: var(--accent); }
     .program-btn.selected {
-      border-color: #1a73e8;
-      background: #e8f0fe;
-      color: #1a73e8;
+      border-color: var(--accent);
+      background: var(--accent-bg);
+      color: var(--accent);
     }
     .program-btn.disabled {
       opacity: 0.4;
@@ -133,7 +189,7 @@
     }
     .input-label {
       font-size: 11px;
-      color: #5f6368;
+      color: var(--text-secondary);
       margin-top: 10px;
       margin-bottom: 4px;
       display: block;
@@ -142,22 +198,28 @@
     .text-input {
       width: 100%;
       padding: 7px 10px;
-      border: 1px solid #dadce0;
+      border: 1px solid var(--border);
       border-radius: 6px;
       font-size: 12px;
       outline: none;
       transition: border-color 0.15s;
+      background: var(--card-bg);
+      color: var(--text);
     }
-    .text-input:focus { border-color: #1a73e8; }
+    .text-input:focus { border-color: var(--accent); }
+    .text-input:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
     .hint {
       font-size: 10px;
-      color: #9aa0a6;
+      color: var(--text-tertiary);
       margin-top: 4px;
       line-height: 1.4;
     }
     .section-label {
       font-size: 11px;
-      color: #80868b;
+      color: var(--text-tertiary);
       font-weight: 500;
       display: inline-block;
     }
@@ -168,7 +230,7 @@
     }
     .history-item {
       padding: 7px 0;
-      border-bottom: 1px solid #f1f3f4;
+      border-bottom: 1px solid var(--border-soft);
       font-size: 11px;
       line-height: 1.5;
     }
@@ -177,8 +239,18 @@
       display: flex;
       justify-content: space-between;
       margin-bottom: 3px;
+      align-items: center;
     }
-    .history-time { color: #80868b; font-size: 10px; }
+    .history-time { color: var(--text-tertiary); font-size: 10px; }
+    .history-source {
+      display: inline-block;
+      padding: 1px 4px;
+      border-radius: 4px;
+      font-size: 9px;
+      background: var(--hint-bg);
+      color: var(--text-secondary);
+      margin-left: 4px;
+    }
     .history-program {
       font-weight: 600;
       padding: 1px 6px;
@@ -186,10 +258,10 @@
       font-size: 10px;
       text-transform: uppercase;
     }
-    .program-badge-success { background: #e6f4ea; color: #137333; }
-    .program-badge-error { background: #fce8e6; color: #c5221f; }
+    .program-badge-success { background: var(--success-bg); color: var(--success); }
+    .program-badge-error { background: var(--error-bg); color: var(--error); }
     .history-url {
-      color: #1a73e8;
+      color: var(--accent);
       word-break: break-all;
       text-decoration: none;
       cursor: pointer;
@@ -199,7 +271,7 @@
     .history-empty {
       padding: 14px;
       text-align: center;
-      color: #9aa0a6;
+      color: var(--text-tertiary);
       font-size: 11px;
       font-style: italic;
     }
@@ -209,17 +281,17 @@
       cursor: pointer;
       padding: 3px 6px;
       font-size: 11px;
-      color: #1a73e8;
+      color: var(--accent);
       border-radius: 4px;
       transition: background 0.15s;
     }
-    .icon-btn:hover { background: #e8f0fe; }
-    .icon-btn.danger { color: #c5221f; }
-    .icon-btn.danger:hover { background: #fce8e6; }
+    .icon-btn:hover { background: var(--accent-bg); }
+    .icon-btn.danger { color: var(--error); }
+    .icon-btn.danger:hover { background: var(--error-bg); }
     .available-chip {
       display: inline-block;
-      background: #e8f0fe;
-      color: #1a73e8;
+      background: var(--accent-bg);
+      color: var(--accent);
       padding: 1px 6px;
       border-radius: 8px;
       font-size: 10px;
@@ -236,19 +308,19 @@
       flex: 1;
       text-align: center;
       padding: 8px 4px;
-      background: #f8f9fa;
+      background: var(--bg);
       border-radius: 6px;
     }
     .stat-value {
       font-size: 20px;
       font-weight: 700;
-      color: #202124;
+      color: var(--text);
     }
-    .stat-value.success { color: #137333; }
-    .stat-value.error { color: #c5221f; }
+    .stat-value.success { color: var(--success); }
+    .stat-value.error { color: var(--error); }
     .stat-label {
       font-size: 10px;
-      color: #5f6368;
+      color: var(--text-secondary);
       margin-top: 2px;
     }
     .program_stats {
@@ -260,153 +332,370 @@
       display: inline-flex;
       align-items: center;
       gap: 4px;
-      background: #f1f3f4;
+      background: var(--hint-bg);
       border-radius: 8px;
       padding: 2px 8px;
       font-size: 10px;
-      color: #202124;
+      color: var(--text);
     }
     .prog-stat-chip .prog-name {
       font-weight: 600;
       text-transform: uppercase;
     }
     .prog-stat-chip .prog-count {
-      color: #5f6368;
+      color: var(--text-secondary);
     }
+    /* Manual forward row */
+    .manual-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+    .manual-row .text-input { flex: 1; }
+    .primary-btn {
+      padding: 7px 12px;
+      border: none;
+      border-radius: 6px;
+      background: var(--accent);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    .primary-btn:hover { opacity: 0.9; }
+    .primary-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    /* Logs panel */
+    .logs-box {
+      max-height: 160px;
+      overflow-y: auto;
+      background: var(--bg);
+      border-radius: 6px;
+      padding: 8px;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 10px;
+      line-height: 1.5;
+      color: var(--text-secondary);
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .logs-box.empty { color: var(--text-tertiary); font-style: italic; }
+    /* Tabs */
+    .tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 10px;
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .tab {
+      padding: 6px 10px;
+      cursor: pointer;
+      font-size: 12px;
+      color: var(--text-secondary);
+      border-bottom: 2px solid transparent;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .tab.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+      font-weight: 600;
+    }
+    .tab:hover { color: var(--accent); }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+    /* Filter row for history */
+    .history-filter {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 6px;
+      align-items: center;
+    }
+    .history-filter .text-input {
+      padding: 4px 8px;
+      font-size: 11px;
+    }
+    .modal-backdrop {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.5);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      padding: 12px;
+    }
+    .modal-backdrop.active { display: flex; }
+    .modal {
+      background: var(--card-bg);
+      border-radius: 8px;
+      padding: 14px;
+      max-width: 320px;
+      width: 100%;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+    }
+    .modal h3 {
+      font-size: 14px;
+      margin-bottom: 10px;
+    }
+    .modal textarea {
+      width: 100%;
+      height: 180px;
+      font-family: "SFMono-Regular", Consolas, Menlo, monospace;
+      font-size: 10px;
+      padding: 8px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg);
+      color: var(--text);
+      resize: vertical;
+    }
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 6px;
+      margin-top: 10px;
+    }
+    .secondary-btn {
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--card-bg);
+      color: var(--text);
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .secondary-btn:hover { background: var(--bg); }
   </style>
 </head>
 <body>
   <div class="header">
     <h1>Download Forwarder</h1>
-    <div class="status-badge disconnected" id="status">
-      <span class="status-dot"></span>
-      <span id="status-text">未连接</span>
+    <div class="header-actions">
+      <button class="icon-circle-btn" id="theme-btn" title="切换深色/浅色主题">&#x1F313;</button>
+      <div class="status-badge disconnected" id="status">
+        <span class="status-dot"></span>
+        <span id="status-text">未连接</span>
+      </div>
     </div>
   </div>
   <div class="server-info" id="server-info">本地服务器未运行</div>
 
-  <!-- 开关 -->
-  <div class="card">
-    <div class="toggle-row">
-      <span class="toggle-label">启用下载拦截</span>
-      <div class="toggle" id="toggle"></div>
-    </div>
+  <!-- 标签页 -->
+  <div class="tabs">
+    <div class="tab active" data-tab="main">主面板</div>
+    <div class="tab" data-tab="rules">规则</div>
+    <div class="tab" data-tab="history">历史</div>
+    <div class="tab" data-tab="advanced">高级</div>
   </div>
 
-  <!-- 下载管理器 -->
-  <div class="card">
-    <div class="card-title">
-      <span>下载管理器</span>
-    </div>
-    <div class="program-grid" id="program-grid">
-      <div class="program-btn" data-program="wget">
-        <div class="program-icon">&#x2B07;</div>
-        <div class="program-name">wget</div>
+  <!-- 主面板 -->
+  <div class="tab-panel active" id="tab-main">
+    <!-- 开关 -->
+    <div class="card">
+      <div class="toggle-row">
+        <span class="toggle-label">启用下载拦截</span>
+        <div class="toggle" id="toggle"></div>
       </div>
-      <div class="program-btn" data-program="curl">
-        <div class="program-icon">&#x1F310;</div>
-        <div class="program-name">curl</div>
-      </div>
-      <div class="program-btn" data-program="gopeed">
-        <div class="program-icon">&#x26A1;</div>
-        <div class="program-name">Gopeed</div>
-      </div>
-      <div class="program-btn" data-program="idm">
-        <div class="program-icon">&#x1F680;</div>
-        <div class="program-name">IDM</div>
-      </div>
-      <div class="program-btn" data-program="ndm">
-        <div class="program-icon">&#x1F4E6;</div>
-        <div class="program-name">NDM</div>
+      <div class="hint" style="margin-top:6px;">
+        快捷键: Alt+Shift+D 切换开关 · Alt+Shift+F 转发当前页面
       </div>
     </div>
 
-    <label class="input-label" for="arguments">额外参数</label>
-    <input type="text" class="text-input" id="arguments" placeholder="例如: -c, --limit-rate=1M">
-    <div class="hint">额外参数会附加到命令末尾（wget / curl / gopeed 支持）</div>
-  </div>
-
-  <!-- 下载目录 -->
-  <div class="card">
-    <div class="card-title">
-      <span>下载目录</span>
-      <span class="section-label" id="server-dir-label"></span>
-    </div>
-    <input type="text" class="text-input" id="download-dir" placeholder="服务器端下载目录">
-    <div class="hint">目录仅对本地服务器有效。更新后会保存到服务器配置中。</div>
-  </div>
-
-  <!-- 文件类型过滤 -->
-  <div class="card">
-    <div class="card-title">
-      <span>文件类型过滤</span>
-      <div class="toggle" id="filetype-toggle" style="width:36px;height:20px;"></div>
-    </div>
-    <input type="text" class="text-input" id="filetype-filter" placeholder="例如: zip,rar,7z,pdf,mp4" disabled>
-    <div class="hint">仅拦截指定扩展名的下载，留空则拦截全部</div>
-  </div>
-
-  <!-- URL黑名单 -->
-  <div class="card">
-    <div class="card-title">
-      <span>URL 黑名单</span>
-      <div class="toggle" id="blacklist-toggle" style="width:36px;height:20px;"></div>
-    </div>
-    <textarea class="text-input" id="url-blacklist" placeholder="每行一个正则表达式，例如：&#10;.*\.google\.com&#10;.*ads.*" rows="3" disabled></textarea>
-    <div class="hint">匹配黑名单的 URL 不会被拦截</div>
-  </div>
-
-  <!-- 并发与速度限制 -->
-  <div class="card">
-    <div class="card-title">
-      <span>并发与速度限制</span>
-    </div>
-    <label class="input-label" for="concurrent-limit">最大并发下载数</label>
-    <input type="number" class="text-input" id="concurrent-limit" min="1" max="20" value="5" placeholder="5">
-    <label class="input-label" for="speed-limit">速度限制 (KB/s, 0=不限)</label>
-    <input type="number" class="text-input" id="speed-limit" min="0" value="0" placeholder="0">
-    <div class="hint">速度限制仅对 wget/curl 有效</div>
-  </div>
-
-  <!-- 统计信息 -->
-  <div class="card">
-    <div class="card-title">
-      <span>下载统计</span>
-    </div>
-    <div id="stats-container">
-      <div class="stats-grid">
-        <div class="stat-item">
-          <div class="stat-value" id="stat-total">0</div>
-          <div class="stat-label">总计</div>
+    <!-- 下载管理器 -->
+    <div class="card">
+      <div class="card-title">
+        <span>下载管理器</span>
+      </div>
+      <div class="program-grid" id="program-grid">
+        <div class="program-btn" data-program="wget">
+          <div class="program-icon">&#x2B07;</div>
+          <div class="program-name">wget</div>
         </div>
-        <div class="stat-item">
-          <div class="stat-value success" id="stat-success">0</div>
-          <div class="stat-label">成功</div>
+        <div class="program-btn" data-program="curl">
+          <div class="program-icon">&#x1F310;</div>
+          <div class="program-name">curl</div>
         </div>
-        <div class="stat-item">
-          <div class="stat-value error" id="stat-error">0</div>
-          <div class="stat-label">失败</div>
+        <div class="program-btn" data-program="gopeed">
+          <div class="program-icon">&#x26A1;</div>
+          <div class="program-name">Gopeed</div>
+        </div>
+        <div class="program-btn" data-program="idm">
+          <div class="program-icon">&#x1F680;</div>
+          <div class="program-name">IDM</div>
+        </div>
+        <div class="program-btn" data-program="ndm">
+          <div class="program-icon">&#x1F4E6;</div>
+          <div class="program-name">NDM</div>
         </div>
       </div>
-      <div id="program-stats" class="program-stats"></div>
+
+      <label class="input-label" for="arguments">额外参数</label>
+      <input type="text" class="text-input" id="arguments" placeholder="例如: -c, --limit-rate=1M">
+      <div class="hint">额外参数会附加到命令末尾（wget / curl / gopeed 支持）</div>
+    </div>
+
+    <!-- 下载目录 -->
+    <div class="card">
+      <div class="card-title">
+        <span>下载目录</span>
+        <span class="section-label" id="server-dir-label"></span>
+      </div>
+      <input type="text" class="text-input" id="download-dir" placeholder="服务器端下载目录">
+      <div class="hint">目录仅对本地服务器有效。更新后会保存到服务器配置中。</div>
+    </div>
+
+    <!-- 手动转发 -->
+    <div class="card">
+      <div class="card-title"><span>手动转发 URL</span></div>
+      <div class="manual-row">
+        <input type="text" class="text-input" id="manual-url" placeholder="https://example.com/file.zip">
+        <button class="primary-btn" id="manual-forward-btn">转发</button>
+      </div>
+      <div class="hint" style="margin-top:6px;">手动转发不依赖拦截开关，可直接将任意 URL 提交到下载管理器</div>
     </div>
   </div>
 
-  <!-- 历史记录 -->
-  <div class="card">
-    <div class="card-title">
-      <span>近期下载</span>
-      <div style="display:flex;gap:4px;">
-        <button class="icon-btn" id="export-json">导出JSON</button>
-        <button class="icon-btn" id="export-csv">导出CSV</button>
-        <button class="icon-btn danger" id="clear-history">清空</button>
+  <!-- 规则面板 -->
+  <div class="tab-panel" id="tab-rules">
+    <!-- 文件类型过滤 -->
+    <div class="card">
+      <div class="card-title">
+        <span>文件类型过滤</span>
+        <div class="toggle" id="filetype-toggle" style="width:36px;height:20px;"></div>
+      </div>
+      <input type="text" class="text-input" id="filetype-filter" placeholder="例如: zip,rar,7z,pdf,mp4" disabled>
+      <div class="hint">仅拦截指定扩展名的下载，留空则拦截全部</div>
+    </div>
+
+    <!-- URL白名单 -->
+    <div class="card">
+      <div class="card-title">
+        <span>URL 白名单（仅拦截这些站点）</span>
+        <div class="toggle" id="whitelist-toggle" style="width:36px;height:20px;"></div>
+      </div>
+      <textarea class="text-input" id="url-whitelist" placeholder="每行一个正则表达式，例如：&#10;.*\.example\.com&#10;.*github.*" rows="3" disabled></textarea>
+      <div class="hint">启用后，仅匹配任一规则的 URL 会被拦截</div>
+    </div>
+
+    <!-- URL黑名单 -->
+    <div class="card">
+      <div class="card-title">
+        <span>URL 黑名单（不拦截这些站点）</span>
+        <div class="toggle" id="blacklist-toggle" style="width:36px;height:20px;"></div>
+      </div>
+      <textarea class="text-input" id="url-blacklist" placeholder="每行一个正则表达式，例如：&#10;.*\.google\.com&#10;.*ads.*" rows="3" disabled></textarea>
+      <div class="hint">匹配黑名单的 URL 不会被拦截</div>
+    </div>
+
+    <!-- 并发与速度限制 -->
+    <div class="card">
+      <div class="card-title">
+        <span>并发与速度限制</span>
+      </div>
+      <label class="input-label" for="concurrent-limit">最大并发下载数</label>
+      <input type="number" class="text-input" id="concurrent-limit" min="1" max="20" value="5" placeholder="5">
+      <label class="input-label" for="speed-limit">速度限制 (KB/s, 0=不限)</label>
+      <input type="number" class="text-input" id="speed-limit" min="0" value="0" placeholder="0">
+      <div class="hint">速度限制仅对 wget/curl 有效</div>
+    </div>
+  </div>
+
+  <!-- 历史面板 -->
+  <div class="tab-panel" id="tab-history">
+    <!-- 统计信息 -->
+    <div class="card">
+      <div class="card-title">
+        <span>下载统计</span>
+      </div>
+      <div id="stats-container">
+        <div class="stats-grid">
+          <div class="stat-item">
+            <div class="stat-value" id="stat-total">0</div>
+            <div class="stat-label">总计</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-value success" id="stat-success">0</div>
+            <div class="stat-label">成功</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-value error" id="stat-error">0</div>
+            <div class="stat-label">失败</div>
+          </div>
+        </div>
+        <div id="program-stats" class="program-stats"></div>
       </div>
     </div>
-    <div id="available-programs"></div>
-    <div class="history-list" id="history-list">
-      <div class="history-empty">暂无下载记录</div>
+
+    <!-- 历史记录 -->
+    <div class="card">
+      <div class="card-title">
+        <span>近期下载</span>
+        <div style="display:flex;gap:4px;">
+          <button class="icon-btn" id="export-json">导出JSON</button>
+          <button class="icon-btn" id="export-csv">导出CSV</button>
+          <button class="icon-btn danger" id="clear-history">清空</button>
+        </div>
+      </div>
+      <div class="history-filter">
+        <input type="text" class="text-input" id="history-search" placeholder="搜索 URL 或文件名…">
+      </div>
+      <div id="available-programs"></div>
+      <div class="history-list" id="history-list">
+        <div class="history-empty">暂无下载记录</div>
+      </div>
+      <div class="hint" style="margin-top:6px;" id="count-label"></div>
     </div>
-    <div class="hint" style="margin-top:6px;" id="count-label"></div>
+  </div>
+
+  <!-- 高级面板 -->
+  <div class="tab-panel" id="tab-advanced">
+    <!-- 服务器日志 -->
+    <div class="card">
+      <div class="card-title">
+        <span>服务器日志</span>
+        <button class="icon-btn" id="refresh-logs">刷新</button>
+      </div>
+      <div id="logs-box" class="logs-box empty">点击刷新加载服务器日志</div>
+    </div>
+
+    <!-- 设置备份 -->
+    <div class="card">
+      <div class="card-title"><span>设置备份与恢复</span></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button class="icon-btn" id="backup-btn">导出全部设置</button>
+        <button class="icon-btn" id="restore-btn">导入设置</button>
+        <button class="icon-btn danger" id="reset-btn">恢复默认</button>
+      </div>
+      <div class="hint" style="margin-top:6px;">
+        备份包含扩展设置和服务器配置，可在不同设备之间迁移
+      </div>
+    </div>
+
+    <!-- 关于 -->
+    <div class="card">
+      <div class="card-title"><span>关于</span></div>
+      <div style="font-size:11px;line-height:1.7;color:var(--text-secondary);">
+        <div><b>版本:</b> <span id="about-version">1.4.0</span></div>
+        <div><b>服务器:</b> <span id="about-server">未连接</span></div>
+        <div><b>平台:</b> <span id="about-platform">-</span></div>
+        <div><b>可用程序:</b> <span id="about-programs">-</span></div>
+        <div style="margin-top:6px;">右键菜单：在链接/图片/视频上右键可快速转发</div>
+        <div>快捷键：Alt+Shift+D 切换 / Alt+Shift+F 转发当前页</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 恢复设置弹窗 -->
+  <div class="modal-backdrop" id="restore-modal">
+    <div class="modal">
+      <h3>导入设置</h3>
+      <div class="hint" style="margin-bottom:6px;">粘贴之前导出的 JSON 内容，然后点击应用</div>
+      <textarea id="restore-textarea" placeholder='{"version":"1.4.0","extension":{...},"server":{...}}'></textarea>
+      <div class="modal-actions">
+        <button class="secondary-btn" id="restore-cancel">取消</button>
+        <button class="primary-btn" id="restore-apply">应用</button>
+      </div>
+    </div>
   </div>
 
   <script src="popup.js"></script>
