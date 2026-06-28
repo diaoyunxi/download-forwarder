@@ -1,6 +1,6 @@
 // Download Forwarder - Popup UI
 const LOCAL_SERVER = "http://127.0.0.1:18735";
-const EXT_VERSION = "1.4.0";
+const EXT_VERSION = "1.6.0";
 
 // --- Element refs ---
 const toggleEl = document.getElementById("toggle");
@@ -46,6 +46,18 @@ const aboutServerEl = document.getElementById("about-server");
 const aboutPlatformEl = document.getElementById("about-platform");
 const aboutProgramsEl = document.getElementById("about-programs");
 
+// v1.6.0 — Network / URL rules / notification prefs
+const cookieToggle = document.getElementById("cookie-toggle");
+const customRefererEl = document.getElementById("custom-referer");
+const customUserAgentEl = document.getElementById("custom-useragent");
+const proxyUrlEl = document.getElementById("proxy-url");
+const notifySilentToggle = document.getElementById("notify-silent-toggle");
+const notifyOnlyErrorsToggle = document.getElementById("notify-only-errors-toggle");
+const urlRulesListEl = document.getElementById("url-rules-list");
+const urlRulePatternEl = document.getElementById("url-rule-pattern");
+const urlRuleProgramEl = document.getElementById("url-rule-program");
+const urlRuleAddBtn = document.getElementById("url-rule-add");
+
 // --- State ---
 let enabled = false;
 let selectedProgram = "wget";
@@ -56,6 +68,14 @@ let blacklistEnabled = false;
 let whitelistEnabled = false;
 let darkMode = false;
 let historySearchQuery = "";
+// v1.6.0 state
+let forwardCookies = false;
+let customReferer = "";
+let customUserAgent = "";
+let proxyUrl = "";
+let notifySilentAll = false;
+let notifyOnlyErrors = false;
+let urlRules = []; // [{ pattern: "...", program: "wget" }, ...]
 
 function chromeGet(keys) {
   return new Promise((resolve) => {
@@ -82,6 +102,13 @@ async function init() {
     "concurrentLimit",
     "speedLimit",
     "darkMode",
+    // v1.6.0
+    "forwardCookies",
+    "customReferer",
+    "customUserAgent",
+    "proxyUrl",
+    "notifyPrefs",
+    "urlRules",
   ]);
   enabled = data.enabled || false;
   selectedProgram = data.program || "wget";
@@ -96,6 +123,15 @@ async function init() {
   concurrentLimit.value = data.concurrentLimit || 5;
   speedLimit.value = data.speedLimit || 0;
   darkMode = data.darkMode || false;
+  // v1.6.0
+  forwardCookies = data.forwardCookies || false;
+  customReferer = data.customReferer || "";
+  customUserAgent = data.customUserAgent || "";
+  proxyUrl = data.proxyUrl || "";
+  const np = data.notifyPrefs || {};
+  notifySilentAll = !!np.silent_all;
+  notifyOnlyErrors = !!np.only_errors;
+  urlRules = Array.isArray(data.urlRules) ? data.urlRules : [];
 
   applyTheme();
   updateToggle();
@@ -103,6 +139,10 @@ async function init() {
   updateFiletypeToggle();
   updateBlacklistToggle();
   updateWhitelistToggle();
+  updateCookieToggle();
+  updateNotifyToggles();
+  populateNetworkInputs();
+  renderUrlRules();
   updateServerStatus(data.serverConnected, data.serverInfo);
   renderHistory(data.recentDownloads || []);
   updateAbout(data.serverInfo);
@@ -157,6 +197,15 @@ async function init() {
     if (cfg && cfg.status === "ok" && cfg.download_dir) {
       if (!downloadDirEl.value) downloadDirEl.value = cfg.download_dir;
       serverDirLabel.textContent = "当前: " + cfg.download_dir;
+    }
+    // v1.6.0: pull server-side url_rules when extension has none yet
+    if (cfg && cfg.status === "ok" && Array.isArray(cfg.url_rules) && urlRules.length === 0 && cfg.url_rules.length > 0) {
+      urlRules = cfg.url_rules.map((r) => ({
+        pattern: r.pattern || "",
+        program: r.program || "wget",
+      }));
+      chrome.storage.local.set({ urlRules });
+      renderUrlRules();
     }
   } catch (e) {}
 
@@ -357,6 +406,12 @@ async function syncSettingsToServer() {
         url_whitelist: urlWhitelist.value.trim(),
         concurrent_limit: parseInt(concurrentLimit.value) || 5,
         speed_limit: parseInt(speedLimit.value) || 0,
+        // v1.6.0
+        url_rules: urlRules,
+        custom_referer: customRefererEl.value.trim(),
+        custom_user_agent: customUserAgentEl.value.trim(),
+        proxy_url: proxyUrlEl.value.trim(),
+        forward_cookies: forwardCookies,
       }),
       signal: AbortSignal.timeout(3000),
     });
@@ -364,6 +419,119 @@ async function syncSettingsToServer() {
     console.warn("Failed to sync settings to server", e);
   }
 }
+
+// --- Cookie forwarding toggle (v1.6.0) ---
+function updateCookieToggle() {
+  cookieToggle.classList.toggle("active", forwardCookies);
+}
+cookieToggle.addEventListener("click", () => {
+  forwardCookies = !forwardCookies;
+  chrome.storage.local.set({ forwardCookies });
+  updateCookieToggle();
+  syncSettingsToServer();
+});
+
+// --- Notification preferences (v1.6.0) ---
+function updateNotifyToggles() {
+  notifySilentToggle.classList.toggle("active", notifySilentAll);
+  notifyOnlyErrorsToggle.classList.toggle("active", notifyOnlyErrors);
+}
+
+function saveNotifyPrefs() {
+  chrome.storage.local.set({
+    notifyPrefs: {
+      silent_all: notifySilentAll,
+      only_errors: notifyOnlyErrors,
+    },
+  });
+}
+
+notifySilentToggle.addEventListener("click", () => {
+  notifySilentAll = !notifySilentAll;
+  saveNotifyPrefs();
+  updateNotifyToggles();
+});
+
+notifyOnlyErrorsToggle.addEventListener("click", () => {
+  notifyOnlyErrors = !notifyOnlyErrors;
+  saveNotifyPrefs();
+  updateNotifyToggles();
+});
+
+// --- Custom headers & proxy (v1.6.0) ---
+function populateNetworkInputs() {
+  customRefererEl.value = customReferer;
+  customUserAgentEl.value = customUserAgent;
+  proxyUrlEl.value = proxyUrl;
+}
+
+customRefererEl.addEventListener("change", () => {
+  customReferer = customRefererEl.value.trim();
+  chrome.storage.local.set({ customReferer });
+  syncSettingsToServer();
+});
+customUserAgentEl.addEventListener("change", () => {
+  customUserAgent = customUserAgentEl.value.trim();
+  chrome.storage.local.set({ customUserAgent });
+  syncSettingsToServer();
+});
+proxyUrlEl.addEventListener("change", () => {
+  proxyUrl = proxyUrlEl.value.trim();
+  chrome.storage.local.set({ proxyUrl });
+  syncSettingsToServer();
+});
+
+// --- URL rules management (v1.6.0) ---
+function renderUrlRules() {
+  if (!urlRules || urlRules.length === 0) {
+    urlRulesListEl.innerHTML =
+      '<div class="url-rules-empty">暂无 URL 规则</div>';
+    return;
+  }
+  urlRulesListEl.innerHTML = urlRules
+    .map((rule, idx) => {
+      return `<div class="url-rule-item">
+        <span class="url-rule-pattern">${escapeHtml(rule.pattern || "")}</span>
+        <span class="url-rule-program">${escapeHtml(
+          (rule.program || "?").toUpperCase()
+        )}</span>
+        <button class="url-rule-delete" data-idx="${idx}" title="删除">&times;</button>
+      </div>`;
+    })
+    .join("");
+}
+
+urlRuleAddBtn.addEventListener("click", () => {
+  const pattern = urlRulePatternEl.value.trim();
+  const program = urlRuleProgramEl.value;
+  if (!pattern) {
+    urlRulePatternEl.focus();
+    return;
+  }
+  // Validate regex
+  try {
+    new RegExp(pattern, "i");
+  } catch (e) {
+    alert("正则表达式无效：" + e.message);
+    return;
+  }
+  urlRules.push({ pattern: pattern, program: program });
+  chrome.storage.local.set({ urlRules });
+  urlRulePatternEl.value = "";
+  renderUrlRules();
+  syncSettingsToServer();
+});
+
+urlRulesListEl.addEventListener("click", (e) => {
+  const btn = e.target.closest(".url-rule-delete");
+  if (!btn) return;
+  const idx = parseInt(btn.dataset.idx, 10);
+  if (isNaN(idx)) return;
+  urlRules.splice(idx, 1);
+  chrome.storage.local.set({ urlRules });
+  renderUrlRules();
+  syncSettingsToServer();
+});
 
 // --- Manual forward ---
 manualForwardBtn.addEventListener("click", async () => {
@@ -684,6 +852,13 @@ restoreApply.addEventListener("click", async () => {
       "concurrentLimit",
       "speedLimit",
       "darkMode",
+      // v1.6.0
+      "forwardCookies",
+      "customReferer",
+      "customUserAgent",
+      "proxyUrl",
+      "notifyPrefs",
+      "urlRules",
     ];
     const toSet = {};
     for (const k of allowed) {
@@ -708,6 +883,12 @@ restoreApply.addEventListener("click", async () => {
       "url_whitelist",
       "concurrent_limit",
       "speed_limit",
+      // v1.6.0
+      "url_rules",
+      "custom_referer",
+      "custom_user_agent",
+      "proxy_url",
+      "forward_cookies",
     ];
     for (const f of fields) {
       if (f in s) body[f] = s[f];

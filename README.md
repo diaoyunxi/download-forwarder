@@ -46,6 +46,15 @@ python server/setup.py
 - 下载历史记录与统计（总计 / 成功 / 失败 / 按程序分类）
 - 导出历史为 JSON / CSV
 
+### v1.6.0 新增功能
+- **Cookie 转发**：自动捕获浏览器中当前站点的登录 Cookie 并转发给下载器（wget / curl），支持需要登录认证的下载。可在「网络」标签页开关
+- **自定义请求头**：可配置 `Referer` 与 `User-Agent`。自动拦截时默认使用来源标签页的 URL 作为 Referer；许多站点要求正确的 Referer / UA 才允许下载
+- **HTTP / HTTPS 代理**：可为 wget / curl 设置代理（支持 http / socks5），同时通过命令行参数与环境变量双通道下发，兼容性最佳
+- **URL 规则管理 UI**：在「规则」标签页可视化管理「按站点指定下载器」的正则规则（服务端早已支持，现在有了图形界面）。匹配规则的 URL 会自动切换到对应下载器，优先级高于默认选择
+- **通知偏好**：可静音所有通知声音、或仅保留失败通知，减少打扰
+- **新增「网络」标签页**：集中管理 Cookie / 请求头 / 代理 / 通知偏好
+- **修复**：弹窗「关于」面板版本号显示与实际版本不同步的问题
+
 ### v1.5.0 新增功能
 - **自动更新检查**：扩展安装/更新时以及每 24 小时（通过 `chrome.alarms`）自动检查 GitHub 上的最新版本。优先调用 GitHub Releases API，失败时回退到 Tags API；发现新版本时弹出系统通知提示用户更新，点击通知即可在浏览器新标签页打开 GitHub Releases 页面下载最新版本
 
@@ -86,23 +95,43 @@ python server/setup.py
 | GET | `/config` | 获取服务器配置 |
 | POST | `/config` | 更新服务器配置（部分字段） |
 | POST | `/config/reset` | 重置服务器配置为默认值 |
-| POST | `/download` | 提交下载任务 |
+| POST | `/download` | 提交下载任务（支持 `cookies` / `headers` / `proxy` 字段，v1.6.0） |
 | GET | `/history` | 获取下载历史 |
 | POST | `/history/clear` | 清空下载历史 |
 | GET | `/stats` | 获取下载统计 |
 | GET | `/logs?limit=N` | 获取最近 N 条服务器日志（1-500，默认 50） |
 | GET | `/export?format=json\|csv` | 导出历史 |
 
+### `/download` 请求体（v1.6.0）
+
+```json
+{
+  "url": "https://example.com/file.zip",
+  "filename": "file.zip",
+  "program": "wget",
+  "arguments": "-c",
+  "speed_limit": 0,
+  "concurrent_limit": 5,
+  "manual": false,
+  "source": "auto",
+  "cookies": "session=abc; token=xyz",
+  "headers": { "Referer": "https://example.com", "User-Agent": "Mozilla/5.0 ..." },
+  "proxy": "http://127.0.0.1:7890"
+}
+```
+
+> `cookies` / `headers` / `proxy` 由浏览器扩展自动捕获并下发；直接调用 API 时如未提供，服务器会回退到自身配置中的 `proxy_url` / `custom_referer` / `custom_user_agent`。
+
 ## 文件结构
 
 ```
-├── manifest.json          # 扩展配置（v1.5.0）
-├── background.js          # 后台服务（拦截 + 转发 + 右键菜单 + 快捷键 + 徽章 + 自动更新检查）
-├── popup.html             # 弹出界面（标签页 + 深色模式 + 模态框）
-├── popup.js               # 界面逻辑（含备份/恢复、日志查看、搜索）
+├── manifest.json          # 扩展配置（v1.6.0）
+├── background.js          # 后台服务（拦截 + 转发 + 右键菜单 + 快捷键 + 徽章 + Cookie 捕获 + 自动更新检查）
+├── popup.html             # 弹出界面（标签页 + 深色模式 + 模态框 + 网络面板）
+├── popup.js               # 界面逻辑（含备份/恢复、日志查看、搜索、URL 规则管理）
 ├── icons/                 # 扩展图标
 ├── server/
 │   ├── setup.py           # 安装脚本（开机自启 + 启动服务器）
-│   └── server.py          # 本地 HTTP 服务器（v1.4.0）
+│   └── server.py          # 本地 HTTP 服务器（v1.6.0）
 └── README.md
 ```

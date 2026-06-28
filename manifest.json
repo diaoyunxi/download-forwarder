@@ -1,19 +1,21 @@
 {
   "manifest_version": 3,
   "name": "Download Forwarder",
-  "version": "1.5.0",
-  "description": "捕获浏览器下载请求并转发到本地下载管理器（wget/curl/IDM/NDM/Gopeed），支持右键菜单、快捷键、深色模式、白名单",
+  "version": "1.6.0",
+  "description": "捕获浏览器下载请求并转发到本地下载管理器（wget/curl/IDM/NDM/Gopeed），支持 Cookie 转发、自定义请求头、代理、URL 规则、右键菜单、快捷键、深色模式",
   "permissions": [
     "downloads",
     "storage",
     "notifications",
     "contextMenus",
     "activeTab",
-    "alarms"
+    "alarms",
+    "cookies"
   ],
   "host_permissions": [
     "http://127.0.0.1:18735/*",
-    "http://localhost:18735/*"
+    "http://localhost:18735/*",
+    "<all_urls>"
   ],
   "background": {
     "service_worker": "background.js"

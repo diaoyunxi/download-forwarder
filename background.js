@@ -12,8 +12,41 @@ let serverInfo = null;
 let recentDownloads = [];
 let activeDownloads = 0;
 
+// --- Notification preferences (loaded from storage) ---
+let notifyPrefs = {
+  silent_all: false,        // mute all notification sounds
+  only_errors: false,       // only show error/failure notifications
+};
+
+async function loadNotifyPrefs() {
+  try {
+    const data = await chrome.storage.local.get(["notifyPrefs"]);
+    if (data.notifyPrefs && typeof data.notifyPrefs === "object") {
+      notifyPrefs = Object.assign(notifyPrefs, data.notifyPrefs);
+    }
+  } catch (e) {
+    /* ignore */
+  }
+}
+loadNotifyPrefs();
+
+// Listen for pref changes from popup
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes.notifyPrefs) {
+    notifyPrefs = Object.assign(
+      notifyPrefs,
+      changes.notifyPrefs.newValue || {}
+    );
+  }
+});
+
 // --- Helpers ---
-function notify(title, message, silent) {
+// Severity: "success" | "error". Success notifications can be suppressed when
+// the user has enabled "only errors" mode.
+function notify(title, message, severity) {
+  const isError = severity === "error";
+  // Suppress success notifications when only_errors is enabled
+  if (notifyPrefs.only_errors && !isError) return;
   try {
     chrome.notifications.create(
       String(Date.now() + Math.random()),
@@ -22,8 +55,8 @@ function notify(title, message, silent) {
         iconUrl: "icons/icon128.png",
         title: title,
         message: message,
-        silent: !!silent,
-        priority: 0,
+        silent: !!notifyPrefs.silent_all,
+        priority: isError ? 2 : 0,
       },
       () => {
         /* ignore errors */
@@ -31,6 +64,32 @@ function notify(title, message, silent) {
     );
   } catch (e) {
     console.error("notify error", e);
+  }
+}
+
+// --- Cookie capture ---
+// Returns a single "name=value; name2=value2" cookie header string for the URL.
+async function getCookieHeader(url) {
+  try {
+    const cookies = await chrome.cookies.getAll({ url });
+    if (!cookies || cookies.length === 0) return "";
+    return cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+  } catch (e) {
+    // cookies API may be unavailable or the URL invalid; treat as no cookies
+    return "";
+  }
+}
+
+// Determine the Referer to forward. Uses the active tab's URL when the
+// download originates from auto-interception; for manual/context-menu sources
+// the caller may pass an explicit referer.
+async function getReferer(tabId) {
+  if (!tabId) return "";
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    return tab && tab.url ? tab.url : "";
+  } catch (e) {
+    return "";
   }
 }
 
@@ -222,7 +281,7 @@ async function toggleInterception() {
     next
       ? "浏览器下载将被转发到本地下载管理器"
       : "浏览器将使用自身下载",
-    true
+    "success"
   );
   // Tell popup if it is open
   try {
@@ -257,7 +316,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 async function forwardUrl(url, filename, source) {
   if (!url) return { status: "error", message: "URL is empty" };
   if (!serverConnected) {
-    notify("下载转发失败", "本地服务器未运行，请先启动 server.py");
+    notify("下载转发失败", "本地服务器未运行，请先启动 server.py", "error");
     return { status: "error", message: "server not connected" };
   }
 
@@ -267,7 +326,28 @@ async function forwardUrl(url, filename, source) {
     "arguments",
     "concurrentLimit",
     "speedLimit",
+    "forwardCookies",
+    "customReferer",
+    "customUserAgent",
+    "proxyUrl",
   ]);
+
+  // Capture cookies if the user has enabled cookie forwarding
+  let cookieHeader = "";
+  if (config.forwardCookies) {
+    cookieHeader = await getCookieHeader(url);
+  }
+
+  // Build custom headers block
+  const headers = {};
+  if (config.customUserAgent && config.customUserAgent.trim()) {
+    headers["User-Agent"] = config.customUserAgent.trim();
+  }
+  // Manual/context-menu/shortcut forwards don't have a source tab; fall back
+  // to the user-configured custom Referer (if any).
+  if (config.customReferer && config.customReferer.trim()) {
+    headers["Referer"] = config.customReferer.trim();
+  }
 
   // Manual forwarding should bypass the "enabled" toggle
   const payload = {
@@ -279,6 +359,9 @@ async function forwardUrl(url, filename, source) {
     concurrent_limit: config.concurrentLimit || 5,
     manual: true,
     source: source,
+    cookies: cookieHeader,
+    headers: headers,
+    proxy: (config.proxyUrl || "").trim(),
   };
 
   let result;
@@ -290,7 +373,7 @@ async function forwardUrl(url, filename, source) {
     });
   } catch (e) {
     console.error("Failed to contact local server", e);
-    notify("下载转发失败", "无法连接到本地服务器");
+    notify("下载转发失败", "无法连接到本地服务器", "error");
     return { status: "error", message: String(e) };
   }
 
@@ -298,7 +381,8 @@ async function forwardUrl(url, filename, source) {
     bumpActive(1);
     notify(
       "下载已转发",
-      `使用 ${config.program || "wget"} 下载: ${truncate(filename || url, 60)}`
+      `使用 ${config.program || "wget"} 下载: ${truncate(filename || url, 60)}`,
+      "success"
     );
     await recordHistory({
       timestamp: new Date().toISOString(),
@@ -310,7 +394,7 @@ async function forwardUrl(url, filename, source) {
     });
   } else {
     const msg = (result && result.message) || "未知错误";
-    notify("下载转发失败", msg);
+    notify("下载转发失败", msg, "error");
     await recordHistory({
       timestamp: new Date().toISOString(),
       url: url,
@@ -339,6 +423,10 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
       "urlWhitelist",
       "concurrentLimit",
       "speedLimit",
+      "forwardCookies",
+      "customReferer",
+      "customUserAgent",
+      "proxyUrl",
     ]);
 
     if (!config.enabled || !serverConnected) {
@@ -415,6 +503,25 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
       extractFilenameFromUrl(url) ||
       "download";
 
+    // Capture cookies for the download URL when enabled
+    let cookieHeader = "";
+    if (config.forwardCookies) {
+      cookieHeader = await getCookieHeader(url);
+    }
+
+    // Build custom headers block. For auto-interception use the source tab's
+    // URL as Referer when no explicit custom Referer is configured.
+    const headers = {};
+    if (config.customUserAgent && config.customUserAgent.trim()) {
+      headers["User-Agent"] = config.customUserAgent.trim();
+    }
+    const referer =
+      (config.customReferer && config.customReferer.trim()) ||
+      (await getReferer(downloadItem.tabId));
+    if (referer) {
+      headers["Referer"] = referer;
+    }
+
     const payload = {
       url: url,
       filename: filename,
@@ -423,6 +530,9 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
       speed_limit: config.speedLimit || 0,
       concurrent_limit: config.concurrentLimit || 5,
       source: "auto",
+      cookies: cookieHeader,
+      headers: headers,
+      proxy: (config.proxyUrl || "").trim(),
     };
 
     let result;
@@ -436,7 +546,8 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
       console.error("Failed to contact local server", networkErr);
       notify(
         "下载转发失败",
-        "无法连接到本地服务器。请确认 server.py 是否启动。"
+        "无法连接到本地服务器。请确认 server.py 是否启动。",
+        "error"
       );
       return;
     }
@@ -453,7 +564,8 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
       bumpActive(1);
       notify(
         "下载已转发",
-        `使用 ${config.program || "wget"} 下载中: ${truncate(filename, 60)}`
+        `使用 ${config.program || "wget"} 下载中: ${truncate(filename, 60)}`,
+        "success"
       );
       await recordHistory({
         timestamp: new Date().toISOString(),
@@ -466,7 +578,7 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
     } else {
       const msg = (result && result.message) || "未知错误";
       console.error("Server returned error:", msg);
-      notify("下载转发失败", msg);
+      notify("下载转发失败", msg, "error");
       await recordHistory({
         timestamp: new Date().toISOString(),
         url: url,

@@ -465,6 +465,54 @@
       font-size: 12px;
     }
     .secondary-btn:hover { background: var(--bg); }
+    /* URL rule list */
+    .url-rule-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 8px;
+      background: var(--bg);
+      border-radius: 6px;
+      margin-bottom: 4px;
+      font-size: 11px;
+    }
+    .url-rule-pattern {
+      flex: 1;
+      font-family: "SFMono-Regular", Consolas, Menlo, monospace;
+      color: var(--text);
+      word-break: break-all;
+    }
+    .url-rule-program {
+      padding: 1px 6px;
+      border-radius: 8px;
+      background: var(--accent-bg);
+      color: var(--accent);
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      flex-shrink: 0;
+    }
+    .url-rule-delete {
+      background: none;
+      border: none;
+      color: var(--text-tertiary);
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      padding: 0 2px;
+      flex-shrink: 0;
+    }
+    .url-rule-delete:hover { color: var(--error); }
+    select.text-input {
+      cursor: pointer;
+      appearance: auto;
+    }
+    .url-rules-empty {
+      font-size: 11px;
+      color: var(--text-tertiary);
+      font-style: italic;
+      padding: 4px 0;
+    }
   </style>
 </head>
 <body>
@@ -484,6 +532,7 @@
   <div class="tabs">
     <div class="tab active" data-tab="main">主面板</div>
     <div class="tab" data-tab="rules">规则</div>
+    <div class="tab" data-tab="network">网络</div>
     <div class="tab" data-tab="history">历史</div>
     <div class="tab" data-tab="advanced">高级</div>
   </div>
@@ -598,6 +647,71 @@
       <input type="number" class="text-input" id="speed-limit" min="0" value="0" placeholder="0">
       <div class="hint">速度限制仅对 wget/curl 有效</div>
     </div>
+
+    <!-- URL 规则（按站点指定下载器） -->
+    <div class="card">
+      <div class="card-title">
+        <span>URL 规则（按站点指定下载器）</span>
+      </div>
+      <div class="hint" style="margin-bottom:6px;">匹配某条正则的 URL 将自动使用对应下载器，优先级高于默认选择</div>
+      <div id="url-rules-list" style="margin-bottom:8px;"></div>
+      <div class="manual-row" style="margin-bottom:6px;">
+        <input type="text" class="text-input" id="url-rule-pattern" placeholder="正则表达式，如 .*\.github\.com">
+      </div>
+      <div class="manual-row">
+        <select class="text-input" id="url-rule-program" style="flex:1;">
+          <option value="wget">wget</option>
+          <option value="curl">curl</option>
+          <option value="gopeed">Gopeed</option>
+          <option value="idm">IDM</option>
+          <option value="ndm">NDM</option>
+        </select>
+        <button class="primary-btn" id="url-rule-add">添加</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 网络面板（Cookie / 请求头 / 代理） -->
+  <div class="tab-panel" id="tab-network">
+    <!-- Cookie 转发 -->
+    <div class="card">
+      <div class="toggle-row">
+        <span class="toggle-label">转发浏览器 Cookie</span>
+        <div class="toggle" id="cookie-toggle"></div>
+      </div>
+      <div class="hint" style="margin-top:6px;">启用后会把当前站点登录 Cookie 一起转发给下载器（wget / curl），支持需要登录的下载</div>
+    </div>
+
+    <!-- 自定义请求头 -->
+    <div class="card">
+      <div class="card-title"><span>自定义请求头</span></div>
+      <label class="input-label" for="custom-referer">Referer（来源页）</label>
+      <input type="text" class="text-input" id="custom-referer" placeholder="留空则自动使用来源标签页 URL">
+      <label class="input-label" for="custom-useragent">User-Agent</label>
+      <input type="text" class="text-input" id="custom-useragent" placeholder="留空则使用下载器默认 UA">
+      <div class="hint">仅对 wget / curl 有效。许多站点要求正确的 Referer / UA 才允许下载</div>
+    </div>
+
+    <!-- 代理 -->
+    <div class="card">
+      <div class="card-title"><span>HTTP / HTTPS 代理</span></div>
+      <input type="text" class="text-input" id="proxy-url" placeholder="例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080">
+      <div class="hint">留空则不使用代理。仅对 wget / curl 有效。代理设置会同步到服务器配置</div>
+    </div>
+
+    <!-- 通知偏好 -->
+    <div class="card">
+      <div class="card-title"><span>通知偏好</span></div>
+      <div class="toggle-row" style="margin-bottom:8px;">
+        <span class="toggle-label">静音所有通知声音</span>
+        <div class="toggle" id="notify-silent-toggle"></div>
+      </div>
+      <div class="toggle-row">
+        <span class="toggle-label">仅在失败时通知</span>
+        <div class="toggle" id="notify-only-errors-toggle"></div>
+      </div>
+      <div class="hint" style="margin-top:6px;">关闭成功提示可减少打扰，失败通知始终保留</div>
+    </div>
   </div>
 
   <!-- 历史面板 -->
@@ -675,7 +789,7 @@
     <div class="card">
       <div class="card-title"><span>关于</span></div>
       <div style="font-size:11px;line-height:1.7;color:var(--text-secondary);">
-        <div><b>版本:</b> <span id="about-version">1.4.0</span></div>
+        <div><b>版本:</b> <span id="about-version">1.6.0</span></div>
         <div><b>服务器:</b> <span id="about-server">未连接</span></div>
         <div><b>平台:</b> <span id="about-platform">-</span></div>
         <div><b>可用程序:</b> <span id="about-programs">-</span></div>

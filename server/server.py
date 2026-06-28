@@ -28,7 +28,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # === Configuration ===
 PORT = 18735
-VERSION = "1.4.0"
+VERSION = "1.6.0"
 DEFAULT_PROGRAMS = ["wget", "curl", "idm", "ndm", "gopeed"]
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".download_forwarder")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
@@ -73,6 +73,11 @@ def load_config():
     data.setdefault("url_whitelist", "")
     data.setdefault("concurrent_limit", 5)
     data.setdefault("speed_limit", 0)
+    # v1.6.0
+    data.setdefault("custom_referer", "")
+    data.setdefault("custom_user_agent", "")
+    data.setdefault("proxy_url", "")
+    data.setdefault("forward_cookies", False)
     return data
 
 
@@ -283,6 +288,10 @@ class DownloadHandler(BaseHTTPRequestHandler):
         speed_limit = data.get("speed_limit", 0)
         is_manual = bool(data.get("manual", False))
         source = (data.get("source") or ("manual" if is_manual else "auto")).strip()
+        # v1.6.0: cookie / header / proxy forwarding (supplied by the extension).
+        cookies = (data.get("cookies") or "").strip()
+        headers = data.get("headers") if isinstance(data.get("headers"), dict) else {}
+        proxy = (data.get("proxy") or "").strip()
 
         if not url:
             log_message("ERROR", "Download request missing URL")
@@ -301,6 +310,19 @@ class DownloadHandler(BaseHTTPRequestHandler):
             client_concurrent = 0
         concurrent_limit = client_concurrent or cfg.get("concurrent_limit", 5)
         speed_limit = speed_limit or cfg.get("speed_limit", 0)
+
+        # v1.6.0: fall back to server-side proxy / custom headers when the
+        # request did not already include them (e.g. direct API callers).
+        if not proxy and cfg.get("proxy_url"):
+            proxy = str(cfg.get("proxy_url") or "").strip()
+        if not headers.get("Referer") and not headers.get("referer"):
+            srv_ref = str(cfg.get("custom_referer") or "").strip()
+            if srv_ref:
+                headers["Referer"] = srv_ref
+        if not headers.get("User-Agent") and not headers.get("user-agent"):
+            srv_ua = str(cfg.get("custom_user_agent") or "").strip()
+            if srv_ua:
+                headers["User-Agent"] = srv_ua
 
         # Server-side filter enforcement (auto downloads only;
         # manual/context-menu/shortcut bypass these so users can always force a download)
@@ -384,7 +406,10 @@ class DownloadHandler(BaseHTTPRequestHandler):
         result = None
         attempt = 0
         for attempt in range(max_retries + 1):
-            result = self._start_download(url, program, args, filename, download_dir, speed_limit)
+            result = self._start_download(
+                url, program, args, filename, download_dir,
+                speed_limit, cookies=cookies, headers=headers, proxy=proxy,
+            )
             if result.get("status") == "success":
                 self._register_download()
                 break
@@ -454,6 +479,26 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 cfg["speed_limit"] = int(data["speed_limit"])
             except (TypeError, ValueError):
                 pass
+        # v1.6.0: URL rules / custom headers / proxy / cookie forwarding
+        if "url_rules" in data:
+            rules = data["url_rules"]
+            if isinstance(rules, list):
+                cfg["url_rules"] = [
+                    {
+                        "pattern": str(r.get("pattern", "")),
+                        "program": str(r.get("program", "wget")),
+                    }
+                    for r in rules
+                    if isinstance(r, dict) and r.get("pattern")
+                ]
+        if "custom_referer" in data:
+            cfg["custom_referer"] = str(data["custom_referer"])
+        if "custom_user_agent" in data:
+            cfg["custom_user_agent"] = str(data["custom_user_agent"])
+        if "proxy_url" in data:
+            cfg["proxy_url"] = str(data["proxy_url"])
+        if "forward_cookies" in data:
+            cfg["forward_cookies"] = bool(data["forward_cookies"])
         save_config(cfg)
         log_message("INFO", "Configuration updated")
         self.send_response(200)
@@ -494,6 +539,11 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 "url_whitelist": "",
                 "concurrent_limit": 5,
                 "speed_limit": 0,
+                # v1.6.0
+                "custom_referer": "",
+                "custom_user_agent": "",
+                "proxy_url": "",
+                "forward_cookies": False,
             }
             save_config(default_cfg)
             log_message("INFO", "Server config reset to defaults")
@@ -508,8 +558,13 @@ class DownloadHandler(BaseHTTPRequestHandler):
             json.dumps({"status": "ok", "message": "Config reset"}).encode("utf-8")
         )
 
-    def _start_download(self, url, program, args, filename, download_dir, speed_limit=0):
-        cmd = self._build_command(url, program, args, filename, download_dir, speed_limit)
+    def _start_download(self, url, program, args, filename, download_dir,
+                       speed_limit=0, cookies="", headers=None, proxy=""):
+        headers = headers or {}
+        cmd = self._build_command(
+            url, program, args, filename, download_dir, speed_limit,
+            cookies=cookies, headers=headers, proxy=proxy,
+        )
 
         if not cmd:
             return {"status": "error", "message": f"Unknown program: {program}"}
@@ -518,15 +573,34 @@ class DownloadHandler(BaseHTTPRequestHandler):
             flags = 0
             if os.name == "nt":
                 flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | 0x08000000  # DETACHED_PROCESS
+            # Pass proxy via env vars too (best-effort socks5 support for wget/curl)
+            env = None
+            if proxy:
+                env = os.environ.copy()
+                env["http_proxy"] = proxy
+                env["https_proxy"] = proxy
+                env["HTTP_PROXY"] = proxy
+                env["HTTPS_PROXY"] = proxy
+                env["all_proxy"] = proxy
+                env["ALL_PROXY"] = proxy
             subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=download_dir,
+                env=env,
                 creationflags=flags if os.name == "nt" else 0,
                 start_new_session=(os.name != "nt"),
             )
-            return {"status": "success", "message": f"Download started via {program}", "url": url}
+            extra = []
+            if cookies:
+                extra.append("with cookies")
+            if proxy:
+                extra.append(f"via proxy {proxy}")
+            if headers:
+                extra.append(f"with {len(headers)} custom header(s)")
+            suffix = (" (" + ", ".join(extra) + ")") if extra else ""
+            return {"status": "success", "message": f"Download started via {program}{suffix}", "url": url}
         except FileNotFoundError:
             return {
                 "status": "error",
@@ -555,8 +629,48 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 _active_downloads = max(0, _active_downloads - 1)
         threading.Timer(300, cleanup).start()
 
-    def _build_command(self, url, program, args, filename, download_dir, speed_limit=0):
+    def _build_command(self, url, program, args, filename, download_dir,
+                       speed_limit=0, cookies="", headers=None, proxy=""):
         arg_list = args.split() if args else []
+        headers = headers or {}
+
+        # Helper: build the list of --header / -H flags for cookies and any
+        # custom headers. Referer/User-Agent are added via dedicated flags for
+        # wget (cleaner) but via -H for curl, so they are excluded from the
+        # generic header loop for wget only.
+        _WGET_DEDICATED = {"referer", "user-agent"}
+
+        def _wget_header_flags():
+            flags = []
+            if cookies:
+                flags.extend(["--header", f"Cookie: {cookies}"])
+            for k, v in headers.items():
+                if k.lower() in _WGET_DEDICATED:
+                    continue  # handled by --referer / -U
+                flags.extend(["--header", f"{k}: {v}"])
+            return flags
+
+        def _curl_header_flags():
+            flags = []
+            if cookies:
+                flags.extend(["-H", f"Cookie: {cookies}"])
+            for k, v in headers.items():
+                flags.extend(["-H", f"{k}: {v}"])
+            return flags
+
+        def _wget_proxy_flags():
+            if not proxy:
+                return []
+            return [
+                "-e", f"http_proxy={proxy}",
+                "-e", f"https_proxy={proxy}",
+                "--proxy=on",
+            ]
+
+        def _curl_proxy_flags():
+            if not proxy:
+                return []
+            return ["--proxy", proxy]
 
         commands = {}
 
@@ -566,11 +680,28 @@ class DownloadHandler(BaseHTTPRequestHandler):
             wget_cmd = ["wget", "-c", "-O", os.path.join(download_dir, safe_name), url]
             if speed_limit > 0:
                 wget_cmd.extend(["--limit-rate", f"{speed_limit}k"])
+            # Custom Referer / User-Agent (also accept from headers dict)
+            referer = headers.get("Referer") or headers.get("referer")
+            if referer:
+                wget_cmd.extend(["--referer", referer])
+            ua = headers.get("User-Agent") or headers.get("user-agent")
+            if ua:
+                wget_cmd.extend(["-U", ua])
+            wget_cmd += _wget_header_flags()
+            wget_cmd += _wget_proxy_flags()
             commands["wget"] = wget_cmd + arg_list
         else:
             wget_cmd = ["wget", "-c", "-P", download_dir, url]
             if speed_limit > 0:
                 wget_cmd.extend(["--limit-rate", f"{speed_limit}k"])
+            referer = headers.get("Referer") or headers.get("referer")
+            if referer:
+                wget_cmd.extend(["--referer", referer])
+            ua = headers.get("User-Agent") or headers.get("user-agent")
+            if ua:
+                wget_cmd.extend(["-U", ua])
+            wget_cmd += _wget_header_flags()
+            wget_cmd += _wget_proxy_flags()
             commands["wget"] = wget_cmd + arg_list
 
         # curl
@@ -579,11 +710,15 @@ class DownloadHandler(BaseHTTPRequestHandler):
             curl_cmd = ["curl", "-L", "-o", os.path.join(download_dir, safe_name), url]
             if speed_limit > 0:
                 curl_cmd.extend(["--limit-rate", f"{speed_limit}k"])
+            curl_cmd += _curl_header_flags()
+            curl_cmd += _curl_proxy_flags()
             commands["curl"] = curl_cmd + arg_list
         else:
             curl_cmd = ["curl", "-L", "-O", "--output-dir", download_dir, url]
             if speed_limit > 0:
                 curl_cmd.extend(["--limit-rate", f"{speed_limit}k"])
+            curl_cmd += _curl_header_flags()
+            curl_cmd += _curl_proxy_flags()
             commands["curl"] = curl_cmd + arg_list
 
         # gopeed
