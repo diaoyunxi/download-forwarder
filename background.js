@@ -117,6 +117,9 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm && alarm.name === PING_ALARM) {
     checkConnection();
   }
+  if (alarm && alarm.name === UPDATE_ALARM) {
+    checkForUpdate();
+  }
 });
 // Kick off an immediate check on SW startup
 checkConnection();
@@ -509,3 +512,118 @@ function truncate(str, n) {
   if (!str) return "";
   return str.length > n ? str.slice(0, n - 1) + "\u2026" : str;
 }
+
+// --- Update Checker ---
+// Checks GitHub for the latest release/tag and notifies the user when a newer
+// version is available. Runs on install/update and every 24 hours via alarm.
+const GITHUB_REPO = "diaoyunxi/download-forwarder";
+const UPDATE_ALARM = "df-update-check";
+
+// Create the periodic update-check alarm (every 24 hours).
+chrome.alarms.create(UPDATE_ALARM, { periodInMinutes: 1440 });
+
+// Trigger an update check immediately when the extension is installed/updated.
+chrome.runtime.onInstalled.addListener((details) => {
+  if (details.reason === "install" || details.reason === "update") {
+    checkForUpdate();
+  }
+});
+
+function compareVersions(v1, v2) {
+  const a = v1.replace(/^v/, "").split(".");
+  const b = v2.replace(/^v/, "").split(".");
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const na = parseInt(a[i] || 0, 10);
+    const nb = parseInt(b[i] || 0, 10);
+    if (na > nb) return 1;
+    if (na < nb) return -1;
+  }
+  return 0;
+}
+
+async function checkForUpdate() {
+  try {
+    const manifest = chrome.runtime.getManifest();
+    const currentVersion = manifest.version;
+
+    // Try Releases API first
+    let latestVersion = null;
+    let releaseUrl = null;
+    try {
+      const resp = await fetch(
+        `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`,
+        {
+          signal: AbortSignal.timeout(10000),
+        }
+      );
+      if (resp.ok) {
+        const data = await resp.json();
+        latestVersion = data.tag_name;
+        releaseUrl = data.html_url;
+      }
+    } catch (e) {
+      console.warn("Update check: Releases API failed", e);
+    }
+
+    // Fallback to Tags API
+    if (!latestVersion) {
+      try {
+        const resp = await fetch(
+          `https://api.github.com/repos/${GITHUB_REPO}/tags`,
+          {
+            signal: AbortSignal.timeout(10000),
+          }
+        );
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data && data.length > 0) {
+            latestVersion = data[0].name;
+            releaseUrl = `https://github.com/${GITHUB_REPO}/releases/tag/${latestVersion}`;
+          }
+        }
+      } catch (e) {
+        console.warn("Update check: Tags API failed", e);
+      }
+    }
+
+    if (!latestVersion) {
+      console.log("Update check: could not determine latest version");
+      return;
+    }
+
+    if (compareVersions(latestVersion, currentVersion) > 0) {
+      const notificationId = `update-available-${Date.now()}`;
+      chrome.notifications.create(notificationId, {
+        type: "basic",
+        iconUrl: "icons/icon128.png",
+        title: "发现新版本",
+        message: `当前版本 v${currentVersion}，最新版本 ${latestVersion}\n点击此处前往更新`,
+        priority: 2,
+      });
+
+      // Store release URL for click handler
+      chrome.storage.local.set({
+        [`updateUrl_${notificationId}`]: releaseUrl,
+      });
+    } else {
+      console.log(
+        `Update check: current version v${currentVersion} is up to date`
+      );
+    }
+  } catch (e) {
+    console.warn("Update check failed", e);
+  }
+}
+
+// Handle notification click - open release page in a new tab
+chrome.notifications.onClicked.addListener((notificationId) => {
+  if (notificationId.startsWith("update-available-")) {
+    chrome.storage.local.get([`updateUrl_${notificationId}`], (result) => {
+      const url = result[`updateUrl_${notificationId}`];
+      if (url) {
+        chrome.tabs.create({ url: url });
+      }
+      chrome.notifications.clear(notificationId);
+    });
+  }
+});
