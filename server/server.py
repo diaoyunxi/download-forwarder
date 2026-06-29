@@ -28,13 +28,25 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # === Configuration ===
 PORT = 18735
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 DEFAULT_PROGRAMS = ["wget", "curl", "idm", "ndm", "gopeed"]
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".download_forwarder")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 HISTORY_FILE = os.path.join(CONFIG_DIR, "history.json")
 LOG_FILE = os.path.join(CONFIG_DIR, "server.log")
 MAX_HISTORY = 100
+
+# v1.7.0: default category rules used by auto-categorize. Each rule maps a
+# list of extensions (lowercase, no leading dot) to a subfolder name. The
+# rules can be fully overridden from the config file / popup UI.
+DEFAULT_CATEGORY_RULES = [
+    {"name": "Documents", "extensions": ["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "csv", "epub"]},
+    {"name": "Archives", "extensions": ["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "iso"]},
+    {"name": "Video", "extensions": ["mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "mpg", "mpeg"]},
+    {"name": "Audio", "extensions": ["mp3", "flac", "wav", "aac", "ogg", "m4a", "wma"]},
+    {"name": "Images", "extensions": ["jpg", "jpeg", "png", "gif", "bmp", "webp", "svg", "tiff", "ico"]},
+    {"name": "Software", "extensions": ["exe", "msi", "dmg", "pkg", "deb", "rpm", "appimage", "apk"]},
+]
 
 # Thread-safe history store
 _history_lock = threading.Lock()
@@ -78,6 +90,9 @@ def load_config():
     data.setdefault("custom_user_agent", "")
     data.setdefault("proxy_url", "")
     data.setdefault("forward_cookies", False)
+    # v1.7.0
+    data.setdefault("categorize_enabled", False)
+    data.setdefault("category_rules", list(DEFAULT_CATEGORY_RULES))
     return data
 
 
@@ -191,6 +206,44 @@ def match_url_rule(url, rules):
     return None
 
 
+def categorize_filename(filename, rules):
+    """v1.7.0: return a subfolder name for the given filename based on its
+    extension, or "" when no rule matches / categorize is disabled.
+    `rules` is the list of {"name": str, "extensions": [str, ...]} entries.
+    """
+    if not filename or not rules:
+        return ""
+    # Extract extension (lowercase, no leading dot)
+    if "." not in filename:
+        return ""
+    ext = filename.rsplit(".", 1)[-1].lower().strip()
+    if not ext:
+        return ""
+    for rule in rules:
+        exts = rule.get("extensions") or []
+        name = (rule.get("name") or "").strip()
+        if name and ext in [e.lower().lstrip(".") for e in exts]:
+            return sanitize_filename(name)
+    return ""
+
+
+def human_readable_size(num_bytes):
+    """Format a byte count into a human-readable string."""
+    try:
+        n = float(num_bytes)
+    except (TypeError, ValueError):
+        return ""
+    if n < 0:
+        return ""
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
+        if n < 1024.0 or unit == "TB":
+            if unit == "B":
+                return f"{int(n)} B"
+            return f"{n:.2f} {unit}"
+        n /= 1024.0
+    return f"{n:.2f} TB"
+
+
 class DownloadHandler(BaseHTTPRequestHandler):
     def _send_cors_headers(self):
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -251,6 +304,8 @@ class DownloadHandler(BaseHTTPRequestHandler):
             self._handle_export()
         elif self.path.startswith("/stats"):
             self._handle_stats()
+        elif self.path.startswith("/check"):
+            self._handle_check()
         else:
             self._send_json({"status": "error", "message": "Not found"}, status=404)
 
@@ -275,6 +330,8 @@ class DownloadHandler(BaseHTTPRequestHandler):
 
         if self.path.startswith("/download"):
             self._handle_download(data)
+        elif self.path.startswith("/batch"):
+            self._handle_batch(data)
         elif self.path.startswith("/config"):
             self._handle_config_update(data)
         else:
@@ -395,8 +452,17 @@ class DownloadHandler(BaseHTTPRequestHandler):
             program = matched_program
             log_message("INFO", f"URL rule matched, using {program}")
 
+        # v1.7.0: auto-categorize into a subfolder based on file extension
+        effective_dir = download_dir
+        category_subfolder = ""
+        if cfg.get("categorize_enabled") and cfg.get("category_rules"):
+            candidate_name = filename or get_filename_from_url(url)
+            category_subfolder = categorize_filename(candidate_name, cfg.get("category_rules"))
+            if category_subfolder:
+                effective_dir = os.path.join(download_dir, category_subfolder)
+
         try:
-            os.makedirs(download_dir, exist_ok=True)
+            os.makedirs(effective_dir, exist_ok=True)
         except OSError as e:
             log_message("ERROR", f"Failed to create download directory: {e}")
             self._send_error(f"Cannot create directory: {e}", 500)
@@ -407,7 +473,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
         attempt = 0
         for attempt in range(max_retries + 1):
             result = self._start_download(
-                url, program, args, filename, download_dir,
+                url, program, args, filename, effective_dir,
                 speed_limit, cookies=cookies, headers=headers, proxy=proxy,
             )
             if result.get("status") == "success":
@@ -428,6 +494,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
             "message": result.get("message", ""),
             "retries": attempt if result.get("status") != "success" else 0,
             "source": source,
+            "category": category_subfolder,
         }
 
         if result.get("status") == "success":
@@ -499,6 +566,26 @@ class DownloadHandler(BaseHTTPRequestHandler):
             cfg["proxy_url"] = str(data["proxy_url"])
         if "forward_cookies" in data:
             cfg["forward_cookies"] = bool(data["forward_cookies"])
+        # v1.7.0: auto-categorize
+        if "categorize_enabled" in data:
+            cfg["categorize_enabled"] = bool(data["categorize_enabled"])
+        if "category_rules" in data:
+            rules = data["category_rules"]
+            if isinstance(rules, list):
+                cleaned = []
+                for r in rules:
+                    if not isinstance(r, dict):
+                        continue
+                    name = str(r.get("name", "")).strip()
+                    exts = r.get("extensions") or []
+                    if isinstance(exts, str):
+                        exts = [e.strip() for e in exts.split(",") if e.strip()]
+                    if name and isinstance(exts, list):
+                        cleaned.append({
+                            "name": name,
+                            "extensions": [str(e).lower().lstrip(".") for e in exts if str(e).strip()],
+                        })
+                cfg["category_rules"] = cleaned
         save_config(cfg)
         log_message("INFO", "Configuration updated")
         self.send_response(200)
@@ -544,6 +631,9 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 "custom_user_agent": "",
                 "proxy_url": "",
                 "forward_cookies": False,
+                # v1.7.0
+                "categorize_enabled": False,
+                "category_rules": list(DEFAULT_CATEGORY_RULES),
             }
             save_config(default_cfg)
             log_message("INFO", "Server config reset to defaults")
@@ -746,6 +836,270 @@ class DownloadHandler(BaseHTTPRequestHandler):
             commands["ndm"] = ["xdg-open", f"ndm:{url}"]
 
         return commands.get(program)
+
+    def _handle_check(self):
+        """v1.7.0: HEAD/GET request to determine remote file size and filename.
+
+        Query params:
+          url=<remote url>
+        Response:
+          {status, url, filename, size, size_human, content_type, redirected, final_url}
+        """
+        from urllib.parse import urlparse, parse_qs
+        params = parse_qs(urlparse(self.path).query)
+        url = (params.get("url") or [""])[0]
+        if not url:
+            self._send_error("Missing url parameter", 400)
+            return
+        if not re.match(r"^https?://", url, re.IGNORECASE):
+            self._send_error("Only http/https URLs are supported", 400)
+            return
+
+        cfg = load_config()
+        proxy = (cfg.get("proxy_url") or "").strip()
+        cookies = ""
+        if cfg.get("forward_cookies"):
+            cookies = ""  # cookies are captured by the extension; nothing to do here
+        headers = {}
+        srv_ref = str(cfg.get("custom_referer") or "").strip()
+        if srv_ref:
+            headers["Referer"] = srv_ref
+        srv_ua = str(cfg.get("custom_user_agent") or "").strip()
+        if srv_ua:
+            headers["User-Agent"] = srv_ua
+
+        try:
+            import urllib.request
+            import urllib.error
+            req = urllib.request.Request(url, method="HEAD", headers=headers)
+            if cookies:
+                req.add_header("Cookie", cookies)
+            opener = urllib.request.build_opener()
+            if proxy:
+                proxy_handler = urllib.request.ProxyHandler({
+                    "http": proxy,
+                    "https": proxy,
+                })
+                opener = urllib.request.build_opener(proxy_handler)
+            resp = opener.open(req, timeout=10)
+            size_raw = resp.headers.get("Content-Length") or resp.headers.get("content-length") or ""
+            try:
+                size = int(size_raw) if size_raw else 0
+            except (TypeError, ValueError):
+                size = 0
+            content_type = resp.headers.get("Content-Type") or resp.headers.get("content-type") or ""
+            final_url = resp.geturl() or url
+            # Derive filename from final URL if the server did not provide one
+            cd = resp.headers.get("Content-Disposition") or resp.headers.get("content-disposition") or ""
+            fname = ""
+            if cd:
+                m = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', cd, re.IGNORECASE)
+                if m:
+                    fname = m.group(1)
+            if not fname:
+                fname = get_filename_from_url(final_url)
+            payload = {
+                "status": "ok",
+                "url": url,
+                "final_url": final_url,
+                "filename": fname,
+                "size": size,
+                "size_human": human_readable_size(size) if size else "",
+                "content_type": content_type,
+                "redirected": final_url != url,
+            }
+            self._send_json(payload)
+        except urllib.error.HTTPError as e:
+            # Some servers reject HEAD; fall back to a ranged GET of 0 bytes.
+            if e.code in (405, 403, 501):
+                fallback = self._check_via_get(url, headers, cookies, proxy)
+                if fallback:
+                    self._send_json(fallback)
+                    return
+            self._send_json({
+                "status": "error",
+                "message": f"HTTP {e.code}: {e.reason}",
+                "url": url,
+            }, status=200)
+        except urllib.error.URLError as e:
+            self._send_json({
+                "status": "error",
+                "message": f"URL error: {e.reason}",
+                "url": url,
+            }, status=200)
+        except Exception as e:
+            self._send_json({
+                "status": "error",
+                "message": str(e),
+                "url": url,
+            }, status=200)
+
+    def _check_via_get(self, url, headers, cookies, proxy):
+        """Fallback when HEAD is rejected: issue a small ranged GET request."""
+        try:
+            import urllib.request
+            import urllib.error
+            get_headers = dict(headers or {})
+            get_headers["Range"] = "bytes=0-0"
+            req = urllib.request.Request(url, method="GET", headers=get_headers)
+            if cookies:
+                req.add_header("Cookie", cookies)
+            opener = urllib.request.build_opener()
+            if proxy:
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({
+                    "http": proxy, "https": proxy,
+                }))
+            resp = opener.open(req, timeout=10)
+            # Content-Range: bytes 0-0/12345 -> total = 12345
+            cr = resp.headers.get("Content-Range") or resp.headers.get("content-range") or ""
+            size = 0
+            m = re.search(r"/(\d+)\s*$", cr)
+            if m:
+                size = int(m.group(1))
+            else:
+                cl = resp.headers.get("Content-Length") or resp.headers.get("content-length") or ""
+                try:
+                    size = int(cl) if cl else 0
+                except (TypeError, ValueError):
+                    size = 0
+            content_type = resp.headers.get("Content-Type") or resp.headers.get("content-type") or ""
+            final_url = resp.geturl() or url
+            cd = resp.headers.get("Content-Disposition") or resp.headers.get("content-disposition") or ""
+            fname = ""
+            if cd:
+                m = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', cd, re.IGNORECASE)
+                if m:
+                    fname = m.group(1)
+            if not fname:
+                fname = get_filename_from_url(final_url)
+            resp.close()
+            return {
+                "status": "ok",
+                "url": url,
+                "final_url": final_url,
+                "filename": fname,
+                "size": size,
+                "size_human": human_readable_size(size) if size else "",
+                "content_type": content_type,
+                "redirected": final_url != url,
+            }
+        except Exception:
+            return None
+
+    def _handle_batch(self, data):
+        """v1.7.0: forward a batch of URLs in a single request.
+
+        Request body:
+          {urls: ["...","..."], program, arguments, manual, source, cookies, headers, proxy}
+        Response:
+          {status, total, success, failed, results:[{url,status,message},...]}
+        Each URL is dispatched to the same _handle_download logic, but without
+        re-sending an HTTP response (we collect results instead).
+        """
+        urls = data.get("urls") or []
+        if not isinstance(urls, list) or not urls:
+            self._send_error("Missing or invalid 'urls' list", 400)
+            return
+
+        program = (data.get("program") or "wget").strip().lower()
+        args = (data.get("arguments") or "").strip()
+        is_manual = bool(data.get("manual", True))
+        source = (data.get("source") or "batch").strip()
+        cookies = (data.get("cookies") or "").strip()
+        headers = data.get("headers") if isinstance(data.get("headers"), dict) else {}
+        proxy = (data.get("proxy") or "").strip()
+
+        results = []
+        success_count = 0
+        cfg = load_config()
+        download_dir = cfg.get("download_dir") or os.path.join(os.path.expanduser("~"), "Downloads")
+        url_rules = cfg.get("url_rules", [])
+        max_retries = cfg.get("max_retries", 3)
+        try:
+            client_concurrent = int(data.get("concurrent_limit", 0))
+        except (TypeError, ValueError):
+            client_concurrent = 0
+        concurrent_limit = client_concurrent or cfg.get("concurrent_limit", 5)
+        speed_limit = data.get("speed_limit", 0) or cfg.get("speed_limit", 0)
+
+        if not proxy and cfg.get("proxy_url"):
+            proxy = str(cfg.get("proxy_url") or "").strip()
+        if not headers.get("Referer") and not headers.get("referer"):
+            srv_ref = str(cfg.get("custom_referer") or "").strip()
+            if srv_ref:
+                headers["Referer"] = srv_ref
+        if not headers.get("User-Agent") and not headers.get("user-agent"):
+            srv_ua = str(cfg.get("custom_user_agent") or "").strip()
+            if srv_ua:
+                headers["User-Agent"] = srv_ua
+
+        for raw_url in urls:
+            url = str(raw_url or "").strip()
+            if not url:
+                results.append({"url": "", "status": "error", "message": "empty url"})
+                continue
+            filename = sanitize_filename(get_filename_from_url(url)) or "download"
+            chosen = program
+            matched = match_url_rule(url, url_rules)
+            if matched:
+                chosen = matched
+
+            effective_dir = download_dir
+            category_subfolder = ""
+            if cfg.get("categorize_enabled") and cfg.get("category_rules"):
+                category_subfolder = categorize_filename(filename, cfg.get("category_rules"))
+                if category_subfolder:
+                    effective_dir = os.path.join(download_dir, category_subfolder)
+
+            try:
+                os.makedirs(effective_dir, exist_ok=True)
+            except OSError as e:
+                results.append({"url": url, "status": "error", "message": f"mkdir failed: {e}"})
+                continue
+
+            attempt = 0
+            result = None
+            for attempt in range(max_retries + 1):
+                result = self._start_download(
+                    url, chosen, args, filename, effective_dir,
+                    speed_limit, cookies=cookies, headers=headers, proxy=proxy,
+                )
+                if result.get("status") == "success":
+                    self._register_download()
+                    break
+                if attempt < max_retries:
+                    time.sleep(0.5)
+            status = result.get("status", "error")
+            if status == "success":
+                success_count += 1
+            results.append({
+                "url": url,
+                "status": status,
+                "message": result.get("message", ""),
+                "program": chosen,
+                "filename": filename,
+            })
+            entry = {
+                "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "url": url,
+                "program": chosen,
+                "filename": filename,
+                "status": status,
+                "message": result.get("message", ""),
+                "retries": attempt if status != "success" else 0,
+                "source": source,
+                "category": category_subfolder,
+            }
+            append_history(entry)
+
+        log_message("INFO", f"Batch forward: {success_count}/{len(urls)} succeeded")
+        self._send_json({
+            "status": "ok",
+            "total": len(urls),
+            "success": success_count,
+            "failed": len(urls) - success_count,
+            "results": results,
+        })
 
     def _handle_export(self):
         """Export history as JSON or CSV"""

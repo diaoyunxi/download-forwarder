@@ -1,6 +1,6 @@
 // Download Forwarder - Popup UI
 const LOCAL_SERVER = "http://127.0.0.1:18735";
-const EXT_VERSION = "1.6.0";
+const EXT_VERSION = "1.7.0";
 
 // --- Element refs ---
 const toggleEl = document.getElementById("toggle");
@@ -58,6 +58,39 @@ const urlRulePatternEl = document.getElementById("url-rule-pattern");
 const urlRuleProgramEl = document.getElementById("url-rule-program");
 const urlRuleAddBtn = document.getElementById("url-rule-add");
 
+// v1.7.0 — Batch / size check / sniff / categorize
+const batchToggle = document.getElementById("batch-toggle");
+const singleUrlRow = document.getElementById("single-url-row");
+const batchUrlRow = document.getElementById("batch-url-row");
+const batchUrlsEl = document.getElementById("batch-urls");
+const batchCountLabel = document.getElementById("batch-count-label");
+const batchForwardBtn = document.getElementById("batch-forward-btn");
+const checkSizeBtn = document.getElementById("check-size-btn");
+const sizeCheckResult = document.getElementById("size-check-result");
+const sniffRefreshBtn = document.getElementById("sniff-refresh-btn");
+const sniffListEl = document.getElementById("sniff-list");
+const sniffStatusEl = document.getElementById("sniff-status");
+const sniffFilterEl = document.getElementById("sniff-filter");
+const sniffSelectAllBtn = document.getElementById("sniff-select-all");
+const sniffSelectNoneBtn = document.getElementById("sniff-select-none");
+const sniffSelectedLabel = document.getElementById("sniff-selected-label");
+const sniffForwardBtn = document.getElementById("sniff-forward-btn");
+const categorizeToggle = document.getElementById("categorize-toggle");
+const categoryRulesEl = document.getElementById("category-rules");
+const categoryResetBtn = document.getElementById("category-reset-btn");
+const categoryApplyBtn = document.getElementById("category-apply-btn");
+
+// v1.7.0: default category rules (must match the server-side defaults so the
+// popup can populate the textarea even before contacting the server)
+const DEFAULT_CATEGORY_RULES = [
+  { name: "Documents", extensions: ["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "csv", "epub"] },
+  { name: "Archives", extensions: ["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "iso"] },
+  { name: "Video", extensions: ["mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "mpg", "mpeg"] },
+  { name: "Audio", extensions: ["mp3", "flac", "wav", "aac", "ogg", "m4a", "wma"] },
+  { name: "Images", extensions: ["jpg", "jpeg", "png", "gif", "bmp", "webp", "svg", "tiff", "ico"] },
+  { name: "Software", extensions: ["exe", "msi", "dmg", "pkg", "deb", "rpm", "appimage", "apk"] },
+];
+
 // --- State ---
 let enabled = false;
 let selectedProgram = "wget";
@@ -76,6 +109,13 @@ let proxyUrl = "";
 let notifySilentAll = false;
 let notifyOnlyErrors = false;
 let urlRules = []; // [{ pattern: "...", program: "wget" }, ...]
+// v1.7.0 state
+let batchMode = false;
+let sniffLinks = []; // [{url,label,filename,download_attr}]
+let sniffSelected = new Set();
+let sniffFilterQuery = "";
+let categorizeEnabled = false;
+let categoryRules = [];
 
 function chromeGet(keys) {
   return new Promise((resolve) => {
@@ -109,6 +149,10 @@ async function init() {
     "proxyUrl",
     "notifyPrefs",
     "urlRules",
+    // v1.7.0
+    "batchMode",
+    "categorizeEnabled",
+    "categoryRules",
   ]);
   enabled = data.enabled || false;
   selectedProgram = data.program || "wget";
@@ -132,6 +176,12 @@ async function init() {
   notifySilentAll = !!np.silent_all;
   notifyOnlyErrors = !!np.only_errors;
   urlRules = Array.isArray(data.urlRules) ? data.urlRules : [];
+  // v1.7.0
+  batchMode = !!data.batchMode;
+  categorizeEnabled = !!data.categorizeEnabled;
+  categoryRules = Array.isArray(data.categoryRules) && data.categoryRules.length > 0
+    ? data.categoryRules
+    : DEFAULT_CATEGORY_RULES;
 
   applyTheme();
   updateToggle();
@@ -143,6 +193,11 @@ async function init() {
   updateNotifyToggles();
   populateNetworkInputs();
   renderUrlRules();
+  // v1.7.0
+  updateBatchToggle();
+  populateCategoryInputs();
+  updateCategorizeToggle();
+  renderSniffList();
   updateServerStatus(data.serverConnected, data.serverInfo);
   renderHistory(data.recentDownloads || []);
   updateAbout(data.serverInfo);
@@ -206,6 +261,22 @@ async function init() {
       }));
       chrome.storage.local.set({ urlRules });
       renderUrlRules();
+    }
+    // v1.7.0: pull server-side categorize config
+    if (cfg && cfg.status === "ok") {
+      if (typeof cfg.categorize_enabled === "boolean") {
+        categorizeEnabled = !!cfg.categorize_enabled;
+        chrome.storage.local.set({ categorizeEnabled });
+        updateCategorizeToggle();
+      }
+      if (Array.isArray(cfg.category_rules) && cfg.category_rules.length > 0) {
+        categoryRules = cfg.category_rules.map((r) => ({
+          name: r.name || "",
+          extensions: Array.isArray(r.extensions) ? r.extensions : [],
+        }));
+        chrome.storage.local.set({ categoryRules });
+        populateCategoryInputs();
+      }
     }
   } catch (e) {}
 
@@ -412,6 +483,9 @@ async function syncSettingsToServer() {
         custom_user_agent: customUserAgentEl.value.trim(),
         proxy_url: proxyUrlEl.value.trim(),
         forward_cookies: forwardCookies,
+        // v1.7.0
+        categorize_enabled: categorizeEnabled,
+        category_rules: categoryRules,
       }),
       signal: AbortSignal.timeout(3000),
     });
@@ -558,6 +632,281 @@ manualForwardBtn.addEventListener("click", async () => {
 });
 manualUrlEl.addEventListener("keydown", (e) => {
   if (e.key === "Enter") manualForwardBtn.click();
+});
+
+// ===========================================================================
+// v1.7.0 features
+// ===========================================================================
+
+// --- Batch mode toggle ---
+function updateBatchToggle() {
+  batchToggle.classList.toggle("active", batchMode);
+  singleUrlRow.style.display = batchMode ? "none" : "flex";
+  batchUrlRow.style.display = batchMode ? "block" : "none";
+  updateBatchCount();
+}
+batchToggle.addEventListener("click", () => {
+  batchMode = !batchMode;
+  chrome.storage.local.set({ batchMode });
+  updateBatchToggle();
+});
+
+function updateBatchCount() {
+  const urls = parseBatchUrls();
+  batchCountLabel.textContent = `${urls.length} 个 URL`;
+}
+function parseBatchUrls() {
+  if (!batchUrlsEl.value) return [];
+  return batchUrlsEl.value
+    .split(/[\n\r]+/)
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith("#"));
+}
+batchUrlsEl.addEventListener("input", updateBatchCount);
+
+batchForwardBtn.addEventListener("click", async () => {
+  const urls = parseBatchUrls();
+  if (urls.length === 0) {
+    batchUrlsEl.focus();
+    return;
+  }
+  batchForwardBtn.disabled = true;
+  try {
+    const resp = await chrome.runtime.sendMessage({
+      type: "batch-forward",
+      urls: urls,
+    });
+    if (resp && resp.status === "ok") {
+      const msg = `成功 ${resp.success} / 失败 ${resp.failed} / 共 ${resp.total}`;
+      alert("批量转发完成：" + msg);
+      if (resp.failed === 0) batchUrlsEl.value = "";
+      updateBatchCount();
+    } else {
+      alert("批量转发失败：" + ((resp && resp.message) || "未知错误"));
+    }
+  } catch (e) {
+    console.warn("batch forward failed", e);
+    alert("批量转发异常：" + String(e));
+  } finally {
+    batchForwardBtn.disabled = false;
+  }
+});
+
+// --- File size pre-check ---
+checkSizeBtn.addEventListener("click", async () => {
+  const url = manualUrlEl.value.trim();
+  if (!url) {
+    manualUrlEl.focus();
+    return;
+  }
+  checkSizeBtn.disabled = true;
+  sizeCheckResult.style.display = "block";
+  sizeCheckResult.innerHTML = '<span class="hint">正在预检…</span>';
+  try {
+    const resp = await chrome.runtime.sendMessage({
+      type: "check-size",
+      url: url,
+    });
+    if (resp && resp.status === "ok") {
+      const parts = [];
+      if (resp.size_human) parts.push(`<span class="size-ok">大小: ${escapeHtml(resp.size_human)}</span>`);
+      if (resp.filename) parts.push(`文件名: ${escapeHtml(resp.filename)}`);
+      if (resp.content_type) parts.push(`类型: ${escapeHtml(resp.content_type)}`);
+      if (resp.redirected) parts.push(`<span class="size-error">(已重定向)</span>`);
+      sizeCheckResult.innerHTML = parts.length ? parts.join(" · ") : '<span class="hint">服务器未返回大小信息</span>';
+    } else {
+      sizeCheckResult.innerHTML = `<span class="size-error">预检失败: ${escapeHtml((resp && resp.message) || "未知错误")}</span>`;
+    }
+  } catch (e) {
+    sizeCheckResult.innerHTML = `<span class="size-error">预检异常: ${escapeHtml(String(e))}</span>`;
+  } finally {
+    checkSizeBtn.disabled = false;
+  }
+});
+
+// --- Link sniffing ---
+function renderSniffList() {
+  const q = sniffFilterQuery.trim().toLowerCase();
+  const filtered = q
+    ? sniffLinks.filter((l) => {
+        const u = (l.url || "").toLowerCase();
+        const f = (l.filename || "").toLowerCase();
+        const lb = (l.label || "").toLowerCase();
+        return u.includes(q) || f.includes(q) || lb.includes(q);
+      })
+    : sniffLinks;
+
+  if (!filtered.length) {
+    sniffListEl.innerHTML = '<div class="sniff-empty">未找到可下载链接，点击「扫描当前页」</div>';
+    updateSniffSelectedLabel();
+    return;
+  }
+  sniffListEl.innerHTML = filtered
+    .map((l, idx) => {
+      const checked = sniffSelected.has(l.url) ? "checked" : "";
+      const name = escapeHtml(l.filename || l.label || l.url);
+      const label = l.label ? `<div class="sniff-item-name">${escapeHtml(l.label)}</div>` : "";
+      return `<div class="sniff-item">
+        <input type="checkbox" class="sniff-checkbox" data-url="${escapeHtml(l.url)}" ${checked}>
+        <div class="sniff-item-body">
+          ${label}
+          <div class="sniff-item-name">${name}</div>
+          <div class="sniff-item-url">${escapeHtml(l.url)}</div>
+        </div>
+      </div>`;
+    })
+    .join("");
+  updateSniffSelectedLabel();
+}
+
+function updateSniffSelectedLabel() {
+  sniffSelectedLabel.textContent = `已选 ${sniffSelected.size} 项 / 共 ${sniffLinks.length} 项`;
+}
+
+sniffRefreshBtn.addEventListener("click", async () => {
+  sniffRefreshBtn.disabled = true;
+  sniffStatusEl.textContent = "正在扫描当前页面…";
+  sniffListEl.innerHTML = '<div class="sniff-empty">扫描中…</div>';
+  try {
+    const resp = await chrome.runtime.sendMessage({ type: "sniff-current-page" });
+    if (resp && resp.status === "ok" && Array.isArray(resp.links)) {
+      sniffLinks = resp.links;
+      sniffSelected = new Set(sniffLinks.map((l) => l.url));
+      sniffStatusEl.textContent = `在 ${escapeHtml(resp.origin || "当前页")} 找到 ${sniffLinks.length} 个可下载链接`;
+      renderSniffList();
+    } else {
+      sniffLinks = [];
+      sniffSelected = new Set();
+      sniffStatusEl.textContent = "扫描失败：" + ((resp && resp.message) || "未找到链接");
+      renderSniffList();
+    }
+  } catch (e) {
+    sniffStatusEl.textContent = "扫描异常：" + escapeHtml(String(e));
+    sniffLinks = [];
+    sniffSelected = new Set();
+    renderSniffList();
+  } finally {
+    sniffRefreshBtn.disabled = false;
+  }
+});
+
+sniffListEl.addEventListener("change", (e) => {
+  const cb = e.target.closest(".sniff-checkbox");
+  if (!cb) return;
+  const url = cb.dataset.url;
+  if (!url) return;
+  if (cb.checked) {
+    sniffSelected.add(url);
+  } else {
+    sniffSelected.delete(url);
+  }
+  updateSniffSelectedLabel();
+});
+
+sniffSelectAllBtn.addEventListener("click", () => {
+  for (const l of sniffLinks) sniffSelected.add(l.url);
+  renderSniffList();
+});
+sniffSelectNoneBtn.addEventListener("click", () => {
+  sniffSelected.clear();
+  renderSniffList();
+});
+
+sniffFilterEl.addEventListener("input", () => {
+  sniffFilterQuery = sniffFilterEl.value;
+  renderSniffList();
+});
+
+sniffForwardBtn.addEventListener("click", async () => {
+  const urls = sniffLinks.filter((l) => sniffSelected.has(l.url)).map((l) => l.url);
+  if (urls.length === 0) {
+    alert("请先勾选要转发的链接");
+    return;
+  }
+  sniffForwardBtn.disabled = true;
+  try {
+    const resp = await chrome.runtime.sendMessage({
+      type: "batch-forward",
+      urls: urls,
+    });
+    if (resp && resp.status === "ok") {
+      alert(`嗅探批量转发完成：成功 ${resp.success} / 失败 ${resp.failed} / 共 ${resp.total}`);
+    } else {
+      alert("转发失败：" + ((resp && resp.message) || "未知错误"));
+    }
+  } catch (e) {
+    alert("转发异常：" + String(e));
+  } finally {
+    sniffForwardBtn.disabled = false;
+  }
+});
+
+// --- Auto-categorize (v1.7.0) ---
+function updateCategorizeToggle() {
+  categorizeToggle.classList.toggle("active", categorizeEnabled);
+  categoryRulesEl.disabled = !categorizeEnabled;
+}
+categorizeToggle.addEventListener("click", () => {
+  categorizeEnabled = !categorizeEnabled;
+  chrome.storage.local.set({ categorizeEnabled });
+  updateCategorizeToggle();
+  syncSettingsToServer();
+});
+
+function populateCategoryInputs() {
+  // Render the rules as "Name: ext1,ext2,..." one per line
+  if (!categoryRules || categoryRules.length === 0) {
+    categoryRulesEl.value = "";
+    return;
+  }
+  categoryRulesEl.value = categoryRules
+    .map((r) => `${r.name}: ${(r.extensions || []).join(",")}`)
+    .join("\n");
+}
+
+function parseCategoryRulesText(text) {
+  if (!text) return [];
+  const rules = [];
+  for (const line of text.split(/[\n\r]+/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const colonIdx = trimmed.indexOf(":");
+    if (colonIdx < 0) continue;
+    const name = trimmed.substring(0, colonIdx).trim();
+    const extsPart = trimmed.substring(colonIdx + 1).trim();
+    const exts = extsPart
+      .split(/[,\s]+/)
+      .map((e) => e.toLowerCase().replace(/^\./, ""))
+      .filter((e) => e);
+    if (name && exts.length > 0) {
+      rules.push({ name: name, extensions: exts });
+    }
+  }
+  return rules;
+}
+
+categoryApplyBtn.addEventListener("click", () => {
+  const text = categoryRulesEl.value;
+  const parsed = parseCategoryRulesText(text);
+  if (parsed.length === 0) {
+    alert("未能解析出任何有效规则。每行格式应为：分类名: ext1,ext2,...");
+    return;
+  }
+  categoryRules = parsed;
+  chrome.storage.local.set({ categoryRules });
+  populateCategoryInputs();
+  syncSettingsToServer();
+  alert(`已应用 ${parsed.length} 条分类规则`);
+});
+
+categoryResetBtn.addEventListener("click", () => {
+  categoryRules = DEFAULT_CATEGORY_RULES.map((r) => ({
+    name: r.name,
+    extensions: r.extensions.slice(),
+  }));
+  chrome.storage.local.set({ categoryRules });
+  populateCategoryInputs();
+  syncSettingsToServer();
 });
 
 // --- Status / info ---
@@ -859,6 +1208,10 @@ restoreApply.addEventListener("click", async () => {
       "proxyUrl",
       "notifyPrefs",
       "urlRules",
+      // v1.7.0
+      "batchMode",
+      "categorizeEnabled",
+      "categoryRules",
     ];
     const toSet = {};
     for (const k of allowed) {
@@ -889,6 +1242,9 @@ restoreApply.addEventListener("click", async () => {
       "custom_user_agent",
       "proxy_url",
       "forward_cookies",
+      // v1.7.0
+      "categorize_enabled",
+      "category_rules",
     ];
     for (const f of fields) {
       if (f in s) body[f] = s[f];

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Download Forwarder",
-  "version": "1.6.0",
-  "description": "捕获浏览器下载请求并转发到本地下载管理器（wget/curl/IDM/NDM/Gopeed），支持 Cookie 转发、自定义请求头、代理、URL 规则、右键菜单、快捷键、深色模式",
+  "version": "1.7.0",
+  "description": "捕获浏览器下载请求并转发到本地下载管理器（wget/curl/IDM/NDM/Gopeed），支持 Cookie 转发、自定义请求头、代理、URL 规则、右键菜单、快捷键、深色模式、批量下载、文件大小预检、链接嗅探、自动分类",
   "permissions": [
     "downloads",
     "storage",
@@ -10,7 +10,8 @@
     "contextMenus",
     "activeTab",
     "alarms",
-    "cookies"
+    "cookies",
+    "scripting"
   ],
   "host_permissions": [
     "http://127.0.0.1:18735/*",
@@ -33,6 +34,13 @@
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
   "commands": {
     "toggle-interception": {
       "suggested_key": {
@@ -45,6 +53,9 @@
         "default": "Alt+Shift+F"
       },
       "description": "将当前页面链接转发到下载管理器"
+    },
+    "sniff-links": {
+      "description": "嗅探当前页面的可下载链接"
     }
   }
 }

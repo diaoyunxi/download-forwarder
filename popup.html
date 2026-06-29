@@ -513,6 +513,43 @@
       font-style: italic;
       padding: 4px 0;
     }
+    /* v1.7.0: sniff list */
+    .sniff-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+      padding: 6px 4px;
+      border-bottom: 1px solid var(--border-soft);
+      font-size: 11px;
+      line-height: 1.4;
+    }
+    .sniff-item:last-child { border-bottom: none; }
+    .sniff-item input[type="checkbox"] {
+      margin-top: 2px;
+      flex-shrink: 0;
+      cursor: pointer;
+    }
+    .sniff-item-body { flex: 1; min-width: 0; }
+    .sniff-item-name {
+      color: var(--text);
+      word-break: break-all;
+      font-weight: 500;
+    }
+    .sniff-item-url {
+      color: var(--text-tertiary);
+      word-break: break-all;
+      font-size: 10px;
+      margin-top: 1px;
+    }
+    .sniff-empty {
+      padding: 14px;
+      text-align: center;
+      color: var(--text-tertiary);
+      font-size: 11px;
+      font-style: italic;
+    }
+    .size-ok { color: var(--success); font-weight: 600; }
+    .size-error { color: var(--error); font-weight: 600; }
   </style>
 </head>
 <body>
@@ -531,6 +568,7 @@
   <!-- 标签页 -->
   <div class="tabs">
     <div class="tab active" data-tab="main">主面板</div>
+    <div class="tab" data-tab="sniff">嗅探</div>
     <div class="tab" data-tab="rules">规则</div>
     <div class="tab" data-tab="network">网络</div>
     <div class="tab" data-tab="history">历史</div>
@@ -593,14 +631,53 @@
       <div class="hint">目录仅对本地服务器有效。更新后会保存到服务器配置中。</div>
     </div>
 
-    <!-- 手动转发 -->
+    <!-- 手动转发 / 批量转发 -->
     <div class="card">
-      <div class="card-title"><span>手动转发 URL</span></div>
-      <div class="manual-row">
+      <div class="card-title">
+        <span>手动 / 批量转发</span>
+        <div class="toggle" id="batch-toggle" style="width:36px;height:20px;" title="切换批量模式"></div>
+      </div>
+      <!-- 单 URL 模式 -->
+      <div id="single-url-row" class="manual-row">
         <input type="text" class="text-input" id="manual-url" placeholder="https://example.com/file.zip">
+        <button class="icon-btn" id="check-size-btn" title="预检文件大小" style="white-space:nowrap;">预检</button>
         <button class="primary-btn" id="manual-forward-btn">转发</button>
       </div>
-      <div class="hint" style="margin-top:6px;">手动转发不依赖拦截开关，可直接将任意 URL 提交到下载管理器</div>
+      <!-- 批量模式 -->
+      <div id="batch-url-row" style="display:none;">
+        <textarea class="text-input" id="batch-urls" rows="4" placeholder="每行一个 URL，例如：&#10;https://example.com/file1.zip&#10;https://example.com/file2.pdf" style="font-family:'SFMono-Regular',Consolas,Menlo,monospace;font-size:11px;resize:vertical;"></textarea>
+        <div class="manual-row" style="margin-top:6px;">
+          <span class="hint" id="batch-count-label" style="flex:1;">0 个 URL</span>
+          <button class="primary-btn" id="batch-forward-btn">批量转发</button>
+        </div>
+      </div>
+      <!-- 文件大小预检结果 -->
+      <div id="size-check-result" style="display:none;margin-top:6px;padding:6px 8px;background:var(--hint-bg);border-radius:6px;font-size:11px;color:var(--text-secondary);"></div>
+      <div class="hint" style="margin-top:6px;">手动转发不依赖拦截开关。批量模式可一次提交多个 URL；预检会通过服务器向目标发起 HEAD 请求获取文件大小</div>
+    </div>
+  </div>
+
+  <!-- 嗅探面板 -->
+  <div class="tab-panel" id="tab-sniff">
+    <div class="card">
+      <div class="card-title">
+        <span>页面链接嗅探</span>
+        <button class="icon-btn" id="sniff-refresh-btn">扫描当前页</button>
+      </div>
+      <div class="hint" style="margin-bottom:6px;">
+        扫描当前标签页中所有可下载链接（带文件扩展名或 download 属性的链接、图片、视频、音频等）。勾选后可批量转发。
+      </div>
+      <div class="history-filter" style="margin-bottom:6px;">
+        <input type="text" class="text-input" id="sniff-filter" placeholder="过滤链接…">
+        <button class="icon-btn" id="sniff-select-all" style="white-space:nowrap;">全选</button>
+        <button class="icon-btn" id="sniff-select-none" style="white-space:nowrap;">清空</button>
+      </div>
+      <div id="sniff-status" class="hint" style="margin-bottom:6px;"></div>
+      <div id="sniff-list" style="max-height:220px;overflow-y:auto;"></div>
+      <div class="manual-row" style="margin-top:8px;">
+        <span class="hint" id="sniff-selected-label" style="flex:1;">已选 0 项</span>
+        <button class="primary-btn" id="sniff-forward-btn">转发选中</button>
+      </div>
     </div>
   </div>
 
@@ -667,6 +744,22 @@
           <option value="ndm">NDM</option>
         </select>
         <button class="primary-btn" id="url-rule-add">添加</button>
+      </div>
+    </div>
+
+    <!-- 自动分类（v1.7.0） -->
+    <div class="card">
+      <div class="card-title">
+        <span>自动分类（按扩展名归档到子文件夹）</span>
+        <div class="toggle" id="categorize-toggle" style="width:36px;height:20px;"></div>
+      </div>
+      <div class="hint" style="margin-bottom:6px;">
+        启用后，下载会按文件扩展名自动归入下载目录下的子文件夹（如 Documents / Video / Archives）。可在下方编辑分类规则，每行一类，格式：分类名: ext1,ext2,...
+      </div>
+      <textarea class="text-input" id="category-rules" rows="6" placeholder="Documents: pdf,doc,docx,txt&#10;Archives: zip,rar,7z,tar,gz&#10;Video: mp4,mkv,avi,mov" style="font-family:'SFMono-Regular',Consolas,Menlo,monospace;font-size:11px;resize:vertical;" disabled></textarea>
+      <div class="manual-row" style="margin-top:6px;">
+        <button class="icon-btn" id="category-reset-btn">恢复默认规则</button>
+        <button class="icon-btn" id="category-apply-btn" style="margin-left:auto;">应用规则</button>
       </div>
     </div>
   </div>
@@ -789,7 +882,7 @@
     <div class="card">
       <div class="card-title"><span>关于</span></div>
       <div style="font-size:11px;line-height:1.7;color:var(--text-secondary);">
-        <div><b>版本:</b> <span id="about-version">1.6.0</span></div>
+        <div><b>版本:</b> <span id="about-version">1.7.0</span></div>
         <div><b>服务器:</b> <span id="about-server">未连接</span></div>
         <div><b>平台:</b> <span id="about-platform">-</span></div>
         <div><b>可用程序:</b> <span id="about-programs">-</span></div>

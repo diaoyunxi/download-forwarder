@@ -269,6 +269,23 @@ chrome.commands.onCommand.addListener(async (command) => {
     } catch (e) {
       console.warn("forward-current-page failed", e);
     }
+  } else if (command === "sniff-links") {
+    // v1.7.0: sniff the current page and forward all detected links as a batch
+    try {
+      const result = await sniffCurrentPage();
+      if (result && result.status === "ok" && result.links && result.links.length > 0) {
+        const urls = result.links.map((l) => l.url);
+        await forwardBatch(urls);
+      } else {
+        notify(
+          "链接嗅探",
+          (result && result.message) || "未找到可下载链接",
+          "error"
+        );
+      }
+    } catch (e) {
+      console.warn("sniff-links shortcut failed", e);
+    }
   }
 });
 
@@ -308,6 +325,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     forwardUrl(msg.url, msg.filename || "", "manual").then((r) =>
       sendResponse(r)
     );
+    return true;
+  }
+  // v1.7.0: batch forward
+  if (msg && msg.type === "batch-forward") {
+    forwardBatch(msg.urls || []).then((r) => sendResponse(r));
+    return true;
+  }
+  // v1.7.0: file size pre-check
+  if (msg && msg.type === "check-size") {
+    checkFileSize(msg.url || "").then((r) => sendResponse(r));
+    return true;
+  }
+  // v1.7.0: link sniffing — ask the active tab's content script to scan
+  if (msg && msg.type === "sniff-current-page") {
+    sniffCurrentPage().then((r) => sendResponse(r));
     return true;
   }
 });
@@ -406,6 +438,207 @@ async function forwardUrl(url, filename, source) {
     });
   }
   return result || { status: "error", message: "unknown" };
+}
+
+// --- v1.7.0: Batch forward ---
+// Accepts an array of URL strings. Captures cookies/headers/proxy once (using
+// the first URL's domain for cookie capture) and submits them all in a single
+// POST /batch request to the local server.
+async function forwardBatch(urls) {
+  if (!Array.isArray(urls) || urls.length === 0) {
+    return { status: "error", message: "URL 列表为空" };
+  }
+  // Normalize / dedupe while preserving order
+  const cleaned = [];
+  const seen = new Set();
+  for (const raw of urls) {
+    const u = String(raw || "").trim();
+    if (!u) continue;
+    if (seen.has(u)) continue;
+    seen.add(u);
+    cleaned.push(u);
+  }
+  if (cleaned.length === 0) {
+    return { status: "error", message: "URL 列表为空" };
+  }
+  if (!serverConnected) {
+    notify("批量转发失败", "本地服务器未运行，请先启动 server.py", "error");
+    return { status: "error", message: "server not connected" };
+  }
+
+  const config = await chrome.storage.local.get([
+    "program",
+    "arguments",
+    "concurrentLimit",
+    "speedLimit",
+    "forwardCookies",
+    "customReferer",
+    "customUserAgent",
+    "proxyUrl",
+  ]);
+
+  // Capture cookies for the first URL's domain (best effort)
+  let cookieHeader = "";
+  if (config.forwardCookies) {
+    cookieHeader = await getCookieHeader(cleaned[0]);
+  }
+
+  const headers = {};
+  if (config.customUserAgent && config.customUserAgent.trim()) {
+    headers["User-Agent"] = config.customUserAgent.trim();
+  }
+  if (config.customReferer && config.customReferer.trim()) {
+    headers["Referer"] = config.customReferer.trim();
+  } else {
+    // Use the active tab URL as Referer for batch downloads
+    const referer = await getRefererForActiveTab();
+    if (referer) headers["Referer"] = referer;
+  }
+
+  const payload = {
+    urls: cleaned,
+    program: config.program || "wget",
+    arguments: config.arguments || "",
+    speed_limit: config.speedLimit || 0,
+    concurrent_limit: config.concurrentLimit || 5,
+    manual: true,
+    source: "batch",
+    cookies: cookieHeader,
+    headers: headers,
+    proxy: (config.proxyUrl || "").trim(),
+  };
+
+  let result;
+  try {
+    result = await fetchJSON(LOCAL_SERVER + "/batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    console.error("Failed to contact local server (batch)", e);
+    notify("批量转发失败", "无法连接到本地服务器", "error");
+    return { status: "error", message: String(e) };
+  }
+
+  if (result && result.status === "ok") {
+    const success = result.success || 0;
+    const failed = result.failed || 0;
+    bumpActive(success);
+    if (failed === 0) {
+      notify(
+        "批量下载已转发",
+        `成功提交 ${success} 个下载任务 (${config.program || "wget"})`,
+        "success"
+      );
+    } else {
+      notify(
+        "批量下载部分完成",
+        `成功 ${success} / 失败 ${failed} / 共 ${result.total}`,
+        failed > 0 ? "error" : "success"
+      );
+    }
+    return result;
+  } else {
+    const msg = (result && result.message) || "未知错误";
+    notify("批量转发失败", msg, "error");
+    return result || { status: "error", message: "unknown" };
+  }
+}
+
+// Helper: get the URL of the currently active tab (for use as Referer).
+async function getRefererForActiveTab() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    return tab && tab.url ? tab.url : "";
+  } catch (e) {
+    return "";
+  }
+}
+
+// --- v1.7.0: File size pre-check ---
+// Asks the local server to perform a HEAD/ranged-GET against the remote URL
+// and return the detected file size, content type and final filename.
+async function checkFileSize(url) {
+  if (!url) return { status: "error", message: "URL is empty" };
+  if (!serverConnected) {
+    return { status: "error", message: "本地服务器未运行" };
+  }
+  try {
+    const encoded = encodeURIComponent(url);
+    const result = await fetchJSON(
+      LOCAL_SERVER + "/check?url=" + encoded,
+      { method: "GET" }
+    );
+    return result || { status: "error", message: "empty response" };
+  } catch (e) {
+    console.error("checkFileSize failed", e);
+    return { status: "error", message: String(e) };
+  }
+}
+
+// --- v1.7.0: Link sniffing ---
+// Sends a "sniff-links" message to the active tab's content script and
+// returns the collected list of downloadable links.
+async function sniffCurrentPage() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab || typeof tab.id !== "number") {
+      return { status: "error", message: "未找到活动标签页", links: [] };
+    }
+    // chrome:// and edge:// pages cannot receive content scripts
+    if (tab.url && /^(chrome|edge|about|moz-extension|chrome-extension):/i.test(tab.url)) {
+      return { status: "error", message: "该页面无法嗅探（浏览器内置页面）", links: [] };
+    }
+    return await new Promise((resolve) => {
+      chrome.tabs.sendMessage(
+        tab.id,
+        { type: "sniff-links", maxItems: 200 },
+        (resp) => {
+          if (chrome.runtime.lastError) {
+            // Content script may not be injected (e.g. on a fresh page); fall
+            // back to programmatic injection so sniffing still works.
+            chrome.scripting.executeScript(
+              {
+                target: { tabId: tab.id },
+                files: ["content.js"],
+              },
+              () => {
+                if (chrome.runtime.lastError) {
+                  resolve({
+                    status: "error",
+                    message: chrome.runtime.lastError.message || "注入脚本失败",
+                    links: [],
+                  });
+                  return;
+                }
+                chrome.tabs.sendMessage(
+                  tab.id,
+                  { type: "sniff-links", maxItems: 200 },
+                  (resp2) => {
+                    if (chrome.runtime.lastError) {
+                      resolve({
+                        status: "error",
+                        message: chrome.runtime.lastError.message,
+                        links: [],
+                      });
+                      return;
+                    }
+                    resolve(resp2 || { status: "error", message: "无响应", links: [] });
+                  }
+                );
+              }
+            );
+            return;
+          }
+          resolve(resp || { status: "error", message: "无响应", links: [] });
+        }
+      );
+    });
+  } catch (e) {
+    console.error("sniffCurrentPage failed", e);
+    return { status: "error", message: String(e), links: [] };
+  }
 }
 
 // --- Download interception ---
