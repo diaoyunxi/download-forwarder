@@ -1,6 +1,6 @@
 // Download Forwarder - Popup UI
 const LOCAL_SERVER = "http://127.0.0.1:18735";
-const EXT_VERSION = "1.7.0";
+const EXT_VERSION = "1.8.0";
 
 // --- Element refs ---
 const toggleEl = document.getElementById("toggle");
@@ -80,6 +80,16 @@ const categoryRulesEl = document.getElementById("category-rules");
 const categoryResetBtn = document.getElementById("category-reset-btn");
 const categoryApplyBtn = document.getElementById("category-apply-btn");
 
+// v1.8.0 — ffmpeg auto-stream toggle, duplicate-warning, history filters, retry, theme tri-state
+const autoFfmpegToggle = document.getElementById("auto-ffmpeg-toggle");
+const dupWarnToggle = document.getElementById("dup-warn-toggle");
+const dupWarnMinutesEl = document.getElementById("dup-warn-minutes");
+const themeModeBadge = document.getElementById("theme-mode-badge");
+const historyStatusFiltersEl = document.getElementById("history-status-filters");
+const historyProgramFilterEl = document.getElementById("history-program-filter");
+const historyCategoryFilterEl = document.getElementById("history-category-filter");
+const historyRetryAllBtn = document.getElementById("history-retry-all");
+
 // v1.7.0: default category rules (must match the server-side defaults so the
 // popup can populate the textarea even before contacting the server)
 const DEFAULT_CATEGORY_RULES = [
@@ -99,7 +109,8 @@ let currentHistory = [];
 let filetypeFilterEnabled = false;
 let blacklistEnabled = false;
 let whitelistEnabled = false;
-let darkMode = false;
+let darkMode = false;        // retained for backward-compat restore; real source of truth is themeMode
+let themeMode = "light";     // v1.8.0: "light" | "dark" | "auto"
 let historySearchQuery = "";
 // v1.6.0 state
 let forwardCookies = false;
@@ -116,6 +127,14 @@ let sniffSelected = new Set();
 let sniffFilterQuery = "";
 let categorizeEnabled = false;
 let categoryRules = [];
+// v1.8.0 state
+let autoFfmpegStreams = true;
+let warnDuplicates = true;
+let duplicateWarnMinutes = 30;
+let historyStatusFilter = "all";   // all | success | error
+let historyProgramFilter = "all";  // all | <program name>
+let historyCategoryFilter = "all"; // all | <category name>
+let _systemDarkMql = null;        // matchMedia list handle
 
 function chromeGet(keys) {
   return new Promise((resolve) => {
@@ -142,6 +161,7 @@ async function init() {
     "concurrentLimit",
     "speedLimit",
     "darkMode",
+    "themeMode",
     // v1.6.0
     "forwardCookies",
     "customReferer",
@@ -153,6 +173,10 @@ async function init() {
     "batchMode",
     "categorizeEnabled",
     "categoryRules",
+    // v1.8.0
+    "autoFfmpegStreams",
+    "warnDuplicates",
+    "duplicateWarnMinutes",
   ]);
   enabled = data.enabled || false;
   selectedProgram = data.program || "wget";
@@ -167,6 +191,12 @@ async function init() {
   concurrentLimit.value = data.concurrentLimit || 5;
   speedLimit.value = data.speedLimit || 0;
   darkMode = data.darkMode || false;
+  // v1.8.0: theme mode (migrate legacy darkMode boolean)
+  if (data.themeMode === "light" || data.themeMode === "dark" || data.themeMode === "auto") {
+    themeMode = data.themeMode;
+  } else {
+    themeMode = darkMode ? "dark" : "light";
+  }
   // v1.6.0
   forwardCookies = data.forwardCookies || false;
   customReferer = data.customReferer || "";
@@ -182,6 +212,12 @@ async function init() {
   categoryRules = Array.isArray(data.categoryRules) && data.categoryRules.length > 0
     ? data.categoryRules
     : DEFAULT_CATEGORY_RULES;
+  // v1.8.0
+  autoFfmpegStreams = data.autoFfmpegStreams !== false; // default true
+  warnDuplicates = data.warnDuplicates !== false;       // default true
+  duplicateWarnMinutes = typeof data.duplicateWarnMinutes === "number"
+    ? data.duplicateWarnMinutes
+    : 30;
 
   applyTheme();
   updateToggle();
@@ -197,6 +233,11 @@ async function init() {
   updateBatchToggle();
   populateCategoryInputs();
   updateCategorizeToggle();
+  // v1.8.0
+  updateAutoFfmpegToggle();
+  updateDupWarnToggle();
+  dupWarnMinutesEl.value = duplicateWarnMinutes;
+  setupSystemThemeListener();
   renderSniffList();
   updateServerStatus(data.serverConnected, data.serverInfo);
   renderHistory(data.recentDownloads || []);
@@ -277,6 +318,12 @@ async function init() {
         chrome.storage.local.set({ categoryRules });
         populateCategoryInputs();
       }
+      // v1.8.0: pull server-side auto-ffmpeg-streams setting
+      if (typeof cfg.auto_ffmpeg_streams === "boolean") {
+        autoFfmpegStreams = !!cfg.auto_ffmpeg_streams;
+        chrome.storage.local.set({ autoFfmpegStreams });
+        updateAutoFfmpegToggle();
+      }
     }
   } catch (e) {}
 
@@ -313,14 +360,61 @@ function mergeHistory(ext, server) {
   return combined.slice(0, 50);
 }
 
-// --- Theme ---
-function applyTheme() {
-  document.body.classList.toggle("dark", darkMode);
-  themeBtn.textContent = darkMode ? "\u2600\uFE0F" : "\u{1F313}";
+// --- Theme (v1.8.0: tri-state light / dark / auto) ---
+function systemPrefersDark() {
+  try {
+    return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  } catch (e) {
+    return false;
+  }
 }
+
+function effectiveDark() {
+  if (themeMode === "dark") return true;
+  if (themeMode === "light") return false;
+  return systemPrefersDark(); // auto
+}
+
+// Set up a matchMedia listener so "auto" reacts to OS theme changes live.
+function setupSystemThemeListener() {
+  try {
+    if (!window.matchMedia) return;
+    if (_systemDarkMql) {
+      _systemDarkMql.removeEventListener("change", _onSystemThemeChange);
+    }
+    _systemDarkMql = window.matchMedia("(prefers-color-scheme: dark)");
+    _systemDarkMql.addEventListener("change", _onSystemThemeChange);
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+function _onSystemThemeChange() {
+  if (themeMode === "auto") applyTheme();
+}
+
+function applyTheme() {
+  darkMode = effectiveDark();
+  document.body.classList.toggle("dark", darkMode);
+  // Icon: sun for light, moon for dark, crescent for auto
+  let icon = "\u{1F313}";       // 🌙 new moon — light default
+  let badge = "浅";
+  if (themeMode === "dark") { icon = "\u2600\uFE0F"; badge = "深"; }      // ☀️
+  else if (themeMode === "auto") { icon = "\u{1F317}"; badge = "自"; }    // 🌗 last quarter
+  // Retain the badge span; rebuild button content
+  themeBtn.textContent = icon;
+  if (themeModeBadge) {
+    themeModeBadge.textContent = badge;
+    // ensure badge stays in the DOM (it's inside the button)
+    if (!themeBtn.contains(themeModeBadge)) themeBtn.appendChild(themeModeBadge);
+  }
+}
+
 themeBtn.addEventListener("click", () => {
-  darkMode = !darkMode;
-  chrome.storage.local.set({ darkMode });
+  // Cycle: light -> dark -> auto -> light
+  const order = { light: "dark", dark: "auto", auto: "light" };
+  themeMode = order[themeMode] || "light";
+  chrome.storage.local.set({ themeMode, darkMode: effectiveDark() });
   applyTheme();
 });
 
@@ -486,6 +580,8 @@ async function syncSettingsToServer() {
         // v1.7.0
         categorize_enabled: categorizeEnabled,
         category_rules: categoryRules,
+        // v1.8.0
+        auto_ffmpeg_streams: autoFfmpegStreams,
       }),
       signal: AbortSignal.timeout(3000),
     });
@@ -909,6 +1005,39 @@ categoryResetBtn.addEventListener("click", () => {
   syncSettingsToServer();
 });
 
+// ===========================================================================
+// v1.8.0 features: auto-ffmpeg toggle, duplicate warning, history filters
+// ===========================================================================
+
+// --- Auto ffmpeg for streams toggle ---
+function updateAutoFfmpegToggle() {
+  autoFfmpegToggle.classList.toggle("active", autoFfmpegStreams);
+}
+autoFfmpegToggle.addEventListener("click", () => {
+  autoFfmpegStreams = !autoFfmpegStreams;
+  chrome.storage.local.set({ autoFfmpegStreams });
+  updateAutoFfmpegToggle();
+  syncSettingsToServer();
+});
+
+// --- Duplicate download warning toggle ---
+function updateDupWarnToggle() {
+  dupWarnToggle.classList.toggle("active", warnDuplicates);
+}
+dupWarnToggle.addEventListener("click", () => {
+  warnDuplicates = !warnDuplicates;
+  chrome.storage.local.set({ warnDuplicates });
+  updateDupWarnToggle();
+});
+dupWarnMinutesEl.addEventListener("change", () => {
+  let v = parseInt(dupWarnMinutesEl.value, 10);
+  if (isNaN(v)) v = 30;
+  v = Math.max(0, Math.min(1440, v));
+  duplicateWarnMinutes = v;
+  dupWarnMinutesEl.value = v;
+  chrome.storage.local.set({ duplicateWarnMinutes: v });
+});
+
 // --- Status / info ---
 function updateServerStatus(connected, info) {
   statusEl.classList.toggle("connected", !!connected);
@@ -948,21 +1077,91 @@ function updateAbout(info) {
   }
 }
 
-// --- History rendering ---
+// --- History rendering (v1.8.0: status / program / category filters + retry) ---
 function renderHistory(items) {
   currentHistory = items || [];
+  // Refresh filter dropdown options + chip counts before filtering
+  populateHistoryFilterOptions();
+  updateHistoryChipCounts();
   applyHistoryFilter();
+}
+
+// Rebuild the program / category dropdowns based on the current history while
+// preserving the user's current selection.
+function populateHistoryFilterOptions() {
+  const programs = new Set();
+  const categories = new Set();
+  for (const item of currentHistory) {
+    if (item && item.program) programs.add(item.program);
+    if (item && item.category) categories.add(item.category);
+  }
+  // Program dropdown
+  const prevProg = historyProgramFilter;
+  let progHtml = '<option value="all">所有下载器</option>';
+  for (const p of [...programs].sort()) {
+    progHtml += `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`;
+  }
+  historyProgramFilterEl.innerHTML = progHtml;
+  if ([...programs].includes(prevProg) || prevProg === "all") {
+    historyProgramFilterEl.value = prevProg;
+  } else {
+    historyProgramFilter = "all";
+    historyProgramFilterEl.value = "all";
+  }
+  // Category dropdown
+  const prevCat = historyCategoryFilter;
+  let catHtml = '<option value="all">所有分类</option>';
+  for (const c of [...categories].sort()) {
+    catHtml += `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`;
+  }
+  historyCategoryFilterEl.innerHTML = catHtml;
+  if ([...categories].includes(prevCat) || prevCat === "all") {
+    historyCategoryFilterEl.value = prevCat;
+  } else {
+    historyCategoryFilter = "all";
+    historyCategoryFilterEl.value = "all";
+  }
+}
+
+function updateHistoryChipCounts() {
+  const setCount = (id, n) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = n;
+  };
+  let success = 0, error = 0;
+  for (const item of currentHistory) {
+    if (!item) continue;
+    if (item.status === "success") success++;
+    else error++;
+  }
+  setCount("chip-count-all", currentHistory.length);
+  setCount("chip-count-success", success);
+  setCount("chip-count-error", error);
 }
 
 function applyHistoryFilter() {
   const q = historySearchQuery.trim().toLowerCase();
-  const filtered = q
-    ? currentHistory.filter((item) => {
-        const u = (item.url || "").toLowerCase();
-        const f = (item.filename || "").toLowerCase();
-        return u.includes(q) || f.includes(q);
-      })
-    : currentHistory;
+  let filtered = currentHistory;
+  // Status filter
+  if (historyStatusFilter !== "all") {
+    filtered = filtered.filter((item) => item && item.status === historyStatusFilter);
+  }
+  // Program filter
+  if (historyProgramFilter !== "all") {
+    filtered = filtered.filter((item) => item && item.program === historyProgramFilter);
+  }
+  // Category filter
+  if (historyCategoryFilter !== "all") {
+    filtered = filtered.filter((item) => item && item.category === historyCategoryFilter);
+  }
+  // Free-text search
+  if (q) {
+    filtered = filtered.filter((item) => {
+      const u = (item.url || "").toLowerCase();
+      const f = (item.filename || "").toLowerCase();
+      return u.includes(q) || f.includes(q);
+    });
+  }
 
   if (!filtered.length) {
     historyListEl.innerHTML = '<div class="history-empty">暂无下载记录</div>';
@@ -981,16 +1180,25 @@ function applyHistoryFilter() {
       const sourceLabel = item.source
         ? `<span class="history-source">${escapeHtml(item.source)}</span>`
         : "";
+      const catLabel = item.category
+        ? `<span class="history-source">${escapeHtml(item.category)}</span>`
+        : "";
+      // Retry reads the URL/filename directly from data attributes, so no
+      // index bookkeeping is needed.
+      const retryDisabled = !displayUrl ? "disabled" : "";
       return `<div class="history-item">
         <div class="history-meta">
           <span class="history-program ${
             success ? "program-badge-success" : "program-badge-error"
           }">${programName}</span>
-          <span class="history-time">${time}${sourceLabel}</span>
+          <span class="history-time">${time}${sourceLabel}${catLabel}</span>
         </div>
         <a class="history-url" href="${escapeHtml(displayUrl)}" target="_blank" rel="noopener">${escapeHtml(
         truncate(item.filename || displayUrl, 60)
       )}</a>
+        <div class="history-actions">
+          <button class="retry-btn" data-url="${escapeHtml(displayUrl)}" data-filename="${escapeHtml(item.filename || "")}" ${retryDisabled}>重试</button>
+        </div>
       </div>`;
     })
     .join("");
@@ -999,6 +1207,81 @@ function applyHistoryFilter() {
     filtered.length
   )} 条)`;
 }
+
+// --- History filter event handlers (v1.8.0) ---
+historyStatusFiltersEl.addEventListener("click", (e) => {
+  const chip = e.target.closest(".filter-chip");
+  if (!chip) return;
+  historyStatusFilter = chip.dataset.status || "all";
+  historyStatusFiltersEl.querySelectorAll(".filter-chip").forEach((c) => {
+    c.classList.toggle("active", c === chip);
+  });
+  applyHistoryFilter();
+});
+
+historyProgramFilterEl.addEventListener("change", () => {
+  historyProgramFilter = historyProgramFilterEl.value || "all";
+  applyHistoryFilter();
+});
+
+historyCategoryFilterEl.addEventListener("change", () => {
+  historyCategoryFilter = historyCategoryFilterEl.value || "all";
+  applyHistoryFilter();
+});
+
+// Retry a single history entry by re-forwarding its URL via the background
+// service worker. Uses the same manual-forward path as the manual URL box.
+async function retryHistoryItem(url, filename) {
+  if (!url) return;
+  try {
+    const resp = await chrome.runtime.sendMessage({
+      type: "manual-forward",
+      url: url,
+      filename: filename || "",
+    });
+    if (resp && resp.status === "success") {
+      // subtle feedback without alerting (keeps the user in flow)
+      return true;
+    }
+    alert("重试失败：" + ((resp && resp.message) || "未知错误"));
+  } catch (e) {
+    alert("重试异常：" + String(e));
+  }
+  return false;
+}
+
+historyListEl.addEventListener("click", async (e) => {
+  const btn = e.target.closest(".retry-btn");
+  if (!btn || btn.disabled) return;
+  const url = btn.dataset.url || "";
+  const filename = btn.dataset.filename || "";
+  if (!url) return;
+  btn.disabled = true;
+  await retryHistoryItem(url, filename);
+  btn.disabled = false;
+});
+
+historyRetryAllBtn.addEventListener("click", async () => {
+  // "重试全部失败" re-forwards every failed record in the full history,
+  // regardless of the active filters (so the button always does what its name
+  // says even while the user is viewing "success" only).
+  const failed = (currentHistory || []).filter((it) => it && it.status !== "success" && it.url);
+  if (failed.length === 0) {
+    alert("当前历史中没有失败记录可重试");
+    return;
+  }
+  if (!confirm(`将重试 ${failed.length} 条失败记录，是否继续？`)) return;
+  historyRetryAllBtn.disabled = true;
+  let ok = 0;
+  let fail = 0;
+  for (const item of failed) {
+    const success = await retryHistoryItem(item.url, item.filename || "");
+    if (success) ok++; else fail++;
+  }
+  historyRetryAllBtn.disabled = false;
+  alert(`重试完成：成功 ${ok} / 失败 ${fail} / 共 ${failed.length}`);
+});
+
 
 historySearchEl.addEventListener("input", () => {
   historySearchQuery = historySearchEl.value;
@@ -1051,9 +1334,16 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (changes.recentDownloads) {
     renderHistory(changes.recentDownloads.newValue || []);
   }
-  if (changes.darkMode) {
+  // v1.8.0: theme mode (also react to legacy darkMode for cross-window sync)
+  if (changes.themeMode) {
+    const v = changes.themeMode.newValue;
+    if (v === "light" || v === "dark" || v === "auto") {
+      themeMode = v;
+      applyTheme();
+    }
+  } else if (changes.darkMode) {
     darkMode = !!changes.darkMode.newValue;
-    applyTheme();
+    if (themeMode !== "auto") applyTheme();
   }
 });
 
@@ -1201,6 +1491,7 @@ restoreApply.addEventListener("click", async () => {
       "concurrentLimit",
       "speedLimit",
       "darkMode",
+      "themeMode",
       // v1.6.0
       "forwardCookies",
       "customReferer",
@@ -1212,6 +1503,10 @@ restoreApply.addEventListener("click", async () => {
       "batchMode",
       "categorizeEnabled",
       "categoryRules",
+      // v1.8.0
+      "autoFfmpegStreams",
+      "warnDuplicates",
+      "duplicateWarnMinutes",
     ];
     const toSet = {};
     for (const k of allowed) {
@@ -1245,6 +1540,8 @@ restoreApply.addEventListener("click", async () => {
       // v1.7.0
       "categorize_enabled",
       "category_rules",
+      // v1.8.0
+      "auto_ffmpeg_streams",
     ];
     for (const f of fields) {
       if (f in s) body[f] = s[f];

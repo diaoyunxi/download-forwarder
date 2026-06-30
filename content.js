@@ -1,6 +1,7 @@
 // Download Forwarder - Content Script
 // v1.7.0: Link sniffing. Scans the current page for downloadable links and
 // reports them back to the popup / background script on demand.
+// v1.8.0: sniff list extended with streaming manifests (.m3u8/.m3u/.mpd).
 
 (function () {
   "use strict";
@@ -18,6 +19,8 @@
     "mp3", "flac", "wav", "aac", "ogg", "m4a", "wma",
     // Video
     "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "mpg", "mpeg", "ts",
+    // v1.8.0: streaming manifests (handled best by ffmpeg)
+    "m3u8", "m3u", "mpd",
     // Images
     "jpg", "jpeg", "png", "gif", "bmp", "webp", "svg", "tiff", "ico", "psd",
     // Software / packages

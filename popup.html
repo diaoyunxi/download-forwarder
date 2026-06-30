@@ -550,13 +550,83 @@
     }
     .size-ok { color: var(--success); font-weight: 600; }
     .size-error { color: var(--error); font-weight: 600; }
+    /* v1.8.0: history filter chips */
+    .filter-chips {
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap;
+      margin-bottom: 6px;
+      align-items: center;
+    }
+    .filter-chip {
+      padding: 3px 8px;
+      border: 1px solid var(--border-soft);
+      border-radius: 12px;
+      background: var(--card-bg);
+      color: var(--text-secondary);
+      cursor: pointer;
+      font-size: 10px;
+      transition: all 0.15s;
+      user-select: none;
+    }
+    .filter-chip:hover { border-color: var(--accent); color: var(--accent); }
+    .filter-chip.active {
+      background: var(--accent-bg);
+      border-color: var(--accent);
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .filter-chip .chip-count {
+      margin-left: 3px;
+      font-size: 9px;
+      opacity: 0.8;
+    }
+    .filter-select {
+      padding: 3px 6px;
+      border: 1px solid var(--border-soft);
+      border-radius: 8px;
+      background: var(--card-bg);
+      color: var(--text);
+      font-size: 10px;
+      cursor: pointer;
+      appearance: auto;
+    }
+    /* v1.8.0: history item with retry button */
+    .history-item .history-actions {
+      display: flex;
+      gap: 4px;
+      margin-top: 4px;
+      justify-content: flex-end;
+    }
+    .retry-btn {
+      padding: 2px 8px;
+      border: 1px solid var(--border-soft);
+      border-radius: 4px;
+      background: var(--card-bg);
+      color: var(--accent);
+      cursor: pointer;
+      font-size: 10px;
+      transition: all 0.15s;
+    }
+    .retry-btn:hover { background: var(--accent-bg); border-color: var(--accent); }
+    .retry-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    /* v1.8.0: tri-state theme indicator badge */
+    .theme-mode-badge {
+      font-size: 9px;
+      padding: 1px 4px;
+      border-radius: 6px;
+      background: var(--accent-bg);
+      color: var(--accent);
+      margin-left: 4px;
+      font-weight: 600;
+    }
   </style>
 </head>
 <body>
   <div class="header">
     <h1>Download Forwarder</h1>
     <div class="header-actions">
-      <button class="icon-circle-btn" id="theme-btn" title="切换深色/浅色主题">&#x1F313;</button>
+      <button class="icon-circle-btn" id="theme-btn" title="切换主题：浅色 / 深色 / 跟随系统">&#x1F313;<span class="theme-mode-badge" id="theme-mode-badge">浅</span></button>
       <div class="status-badge disconnected" id="status">
         <span class="status-dot"></span>
         <span id="status-text">未连接</span>
@@ -613,6 +683,10 @@
         <div class="program-btn" data-program="ndm">
           <div class="program-icon">&#x1F4E6;</div>
           <div class="program-name">NDM</div>
+        </div>
+        <div class="program-btn" data-program="ffmpeg" title="支持 M3U8/HLS/DASH 流媒体">
+          <div class="program-icon">&#x1F3AC;</div>
+          <div class="program-name">ffmpeg</div>
         </div>
       </div>
 
@@ -742,6 +816,7 @@
           <option value="gopeed">Gopeed</option>
           <option value="idm">IDM</option>
           <option value="ndm">NDM</option>
+          <option value="ffmpeg">ffmpeg</option>
         </select>
         <button class="primary-btn" id="url-rule-add">添加</button>
       </div>
@@ -760,6 +835,17 @@
       <div class="manual-row" style="margin-top:6px;">
         <button class="icon-btn" id="category-reset-btn">恢复默认规则</button>
         <button class="icon-btn" id="category-apply-btn" style="margin-left:auto;">应用规则</button>
+      </div>
+    </div>
+
+    <!-- 自动 ffmpeg 流媒体（v1.8.0） -->
+    <div class="card">
+      <div class="toggle-row">
+        <span class="toggle-label">流媒体自动用 ffmpeg</span>
+        <div class="toggle" id="auto-ffmpeg-toggle" style="width:36px;height:20px;"></div>
+      </div>
+      <div class="hint" style="margin-top:6px;">
+        启用后，.m3u8 / .m3u / .mpd 等 HLS/DASH 流媒体 URL 会自动改用 ffmpeg 下载（若已安装），无需手动切换。仅服务端生效。
       </div>
     </div>
   </div>
@@ -802,6 +888,14 @@
       <div class="toggle-row">
         <span class="toggle-label">仅在失败时通知</span>
         <div class="toggle" id="notify-only-errors-toggle"></div>
+      </div>
+      <div class="toggle-row" style="margin-top:8px;">
+        <span class="toggle-label">重复下载提醒</span>
+        <div class="toggle" id="dup-warn-toggle"></div>
+      </div>
+      <div class="manual-row" style="margin-top:6px; align-items:center;">
+        <span class="hint" style="flex:1;">提醒窗口（分钟）：当 URL 在此时长内已下载过则提醒</span>
+        <input type="number" class="text-input" id="dup-warn-minutes" min="0" max="1440" value="30" style="width:64px; padding:3px 6px; font-size:11px;">
       </div>
       <div class="hint" style="margin-top:6px;">关闭成功提示可减少打扰，失败通知始终保留</div>
     </div>
@@ -846,6 +940,18 @@
       <div class="history-filter">
         <input type="text" class="text-input" id="history-search" placeholder="搜索 URL 或文件名…">
       </div>
+      <div class="filter-chips" id="history-status-filters">
+        <span class="filter-chip active" data-status="all">全部<span class="chip-count" id="chip-count-all">0</span></span>
+        <span class="filter-chip" data-status="success">成功<span class="chip-count" id="chip-count-success">0</span></span>
+        <span class="filter-chip" data-status="error">失败<span class="chip-count" id="chip-count-error">0</span></span>
+        <select class="filter-select" id="history-program-filter" title="按下载器筛选">
+          <option value="all">所有下载器</option>
+        </select>
+        <select class="filter-select" id="history-category-filter" title="按分类筛选">
+          <option value="all">所有分类</option>
+        </select>
+        <button class="icon-btn" id="history-retry-all" title="重试当前筛选条件下的全部失败记录" style="white-space:nowrap;">重试全部失败</button>
+      </div>
       <div id="available-programs"></div>
       <div class="history-list" id="history-list">
         <div class="history-empty">暂无下载记录</div>
@@ -882,7 +988,7 @@
     <div class="card">
       <div class="card-title"><span>关于</span></div>
       <div style="font-size:11px;line-height:1.7;color:var(--text-secondary);">
-        <div><b>版本:</b> <span id="about-version">1.7.0</span></div>
+        <div><b>版本:</b> <span id="about-version">1.8.0</span></div>
         <div><b>服务器:</b> <span id="about-server">未连接</span></div>
         <div><b>平台:</b> <span id="about-platform">-</span></div>
         <div><b>可用程序:</b> <span id="about-programs">-</span></div>
@@ -897,7 +1003,7 @@
     <div class="modal">
       <h3>导入设置</h3>
       <div class="hint" style="margin-bottom:6px;">粘贴之前导出的 JSON 内容，然后点击应用</div>
-      <textarea id="restore-textarea" placeholder='{"version":"1.4.0","extension":{...},"server":{...}}'></textarea>
+      <textarea id="restore-textarea" placeholder='{"version":"1.8.0","extension":{...},"server":{...}}'></textarea>
       <div class="modal-actions">
         <button class="secondary-btn" id="restore-cancel">取消</button>
         <button class="primary-btn" id="restore-apply">应用</button>

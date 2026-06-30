@@ -18,12 +18,20 @@ let notifyPrefs = {
   only_errors: false,       // only show error/failure notifications
 };
 
+// v1.8.0: duplicate-download warning. When enabled (default), forwarding a URL
+// that already appears in the recent history within the configured window will
+// emit an extra warning notification (the download itself still proceeds).
+let warnDuplicates = true;
+let duplicateWarnMinutes = 30;
+
 async function loadNotifyPrefs() {
   try {
-    const data = await chrome.storage.local.get(["notifyPrefs"]);
+    const data = await chrome.storage.local.get(["notifyPrefs", "warnDuplicates", "duplicateWarnMinutes"]);
     if (data.notifyPrefs && typeof data.notifyPrefs === "object") {
       notifyPrefs = Object.assign(notifyPrefs, data.notifyPrefs);
     }
+    if (typeof data.warnDuplicates === "boolean") warnDuplicates = data.warnDuplicates;
+    if (typeof data.duplicateWarnMinutes === "number") duplicateWarnMinutes = data.duplicateWarnMinutes;
   } catch (e) {
     /* ignore */
   }
@@ -38,7 +46,47 @@ chrome.storage.onChanged.addListener((changes, area) => {
       changes.notifyPrefs.newValue || {}
     );
   }
+  if (area === "local" && changes.warnDuplicates) {
+    warnDuplicates = !!changes.warnDuplicates.newValue;
+  }
+  if (area === "local" && changes.duplicateWarnMinutes) {
+    const v = changes.duplicateWarnMinutes.newValue;
+    if (typeof v === "number") duplicateWarnMinutes = v;
+  }
 });
+
+// v1.8.0: scan the in-extension recent history for a matching URL within the
+// configured time window. Returns the matching entry or null.
+async function findRecentDuplicate(url) {
+  if (!warnDuplicates || !url) return null;
+  const windowMs = Math.max(0, duplicateWarnMinutes) * 60 * 1000;
+  if (windowMs <= 0) return null;
+  try {
+    const data = await chrome.storage.local.get(["recentDownloads"]);
+    const history = data.recentDownloads || [];
+    const cutoff = Date.now() - windowMs;
+    for (const item of history) {
+      if (!item) continue;
+      if (item.url !== url) continue;
+      const ts = item.timestamp ? new Date(item.timestamp).getTime() : 0;
+      if (ts && ts >= cutoff) return item;
+    }
+  } catch (e) {
+    /* ignore */
+  }
+  return null;
+}
+
+function notifyDuplicateWarning(url, when) {
+  const ago = when
+    ? new Date(when).toLocaleTimeString()
+    : "earlier";
+  notify(
+    "可能重复下载",
+    `该 URL 在 ${ago} 已下载过：${truncate(url, 50)}`,
+    "error"
+  );
+}
 
 // --- Helpers ---
 // Severity: "success" | "error". Success notifications can be suppressed when
@@ -352,6 +400,10 @@ async function forwardUrl(url, filename, source) {
     return { status: "error", message: "server not connected" };
   }
 
+  // v1.8.0: soft duplicate warning (does not block the forward)
+  const dup = await findRecentDuplicate(url);
+  if (dup) notifyDuplicateWarning(url, dup.timestamp);
+
   const config = await chrome.storage.local.get([
     "enabled",
     "program",
@@ -464,6 +516,21 @@ async function forwardBatch(urls) {
   if (!serverConnected) {
     notify("批量转发失败", "本地服务器未运行，请先启动 server.py", "error");
     return { status: "error", message: "server not connected" };
+  }
+
+  // v1.8.0: consolidated duplicate warning for batch forwards
+  if (warnDuplicates) {
+    let dupCount = 0;
+    for (const u of cleaned) {
+      if (await findRecentDuplicate(u)) dupCount++;
+    }
+    if (dupCount > 0) {
+      notify(
+        "可能重复下载",
+        `批量列表中有 ${dupCount} 个 URL 在最近 ${duplicateWarnMinutes} 分钟内已下载过`,
+        "error"
+      );
+    }
   }
 
   const config = await chrome.storage.local.get([
@@ -735,6 +802,10 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
       downloadItem.filename ||
       extractFilenameFromUrl(url) ||
       "download";
+
+    // v1.8.0: soft duplicate warning for auto-intercepted downloads
+    const dup = await findRecentDuplicate(url);
+    if (dup) notifyDuplicateWarning(url, dup.timestamp);
 
     // Capture cookies for the download URL when enabled
     let cookieHeader = "";

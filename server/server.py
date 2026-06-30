@@ -28,8 +28,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # === Configuration ===
 PORT = 18735
-VERSION = "1.7.0"
-DEFAULT_PROGRAMS = ["wget", "curl", "idm", "ndm", "gopeed"]
+VERSION = "1.8.0"
+DEFAULT_PROGRAMS = ["wget", "curl", "idm", "ndm", "gopeed", "ffmpeg"]
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".download_forwarder")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 HISTORY_FILE = os.path.join(CONFIG_DIR, "history.json")
@@ -93,6 +93,9 @@ def load_config():
     # v1.7.0
     data.setdefault("categorize_enabled", False)
     data.setdefault("category_rules", list(DEFAULT_CATEGORY_RULES))
+    # v1.8.0: when True, stream URLs (.m3u8/.m3u/.mpd) are automatically routed
+    # to ffmpeg if it is installed, regardless of the chosen default program.
+    data.setdefault("auto_ffmpeg_streams", True)
     return data
 
 
@@ -242,6 +245,25 @@ def human_readable_size(num_bytes):
             return f"{n:.2f} {unit}"
         n /= 1024.0
     return f"{n:.2f} TB"
+
+
+def is_stream_url(url):
+    """v1.8.0: detect HLS / DASH / manifest URLs that ffmpeg handles best.
+
+    Returns True for .m3u8 / .m3u / .mpd URLs (ignoring query strings / fragments).
+    """
+    if not url:
+        return False
+    try:
+        from urllib.parse import urlparse
+        path = urlparse(url).path.lower()
+    except Exception:
+        path = url.lower()
+    # Strip fragment / query already done by urlparse; just check suffix
+    for ext in (".m3u8", ".m3u", ".mpd"):
+        if path.endswith(ext):
+            return True
+    return False
 
 
 class DownloadHandler(BaseHTTPRequestHandler):
@@ -452,6 +474,14 @@ class DownloadHandler(BaseHTTPRequestHandler):
             program = matched_program
             log_message("INFO", f"URL rule matched, using {program}")
 
+        # v1.8.0: auto-route HLS/DASH stream URLs to ffmpeg when enabled and
+        # ffmpeg is installed (wget/curl cannot natively concatenate segments).
+        if cfg.get("auto_ffmpeg_streams", True) and is_stream_url(url) and program != "ffmpeg":
+            avail = detect_available_programs()
+            if "ffmpeg" in avail:
+                log_message("INFO", f"Stream URL detected, switching {program} -> ffmpeg")
+                program = "ffmpeg"
+
         # v1.7.0: auto-categorize into a subfolder based on file extension
         effective_dir = download_dir
         category_subfolder = ""
@@ -569,6 +599,9 @@ class DownloadHandler(BaseHTTPRequestHandler):
         # v1.7.0: auto-categorize
         if "categorize_enabled" in data:
             cfg["categorize_enabled"] = bool(data["categorize_enabled"])
+        # v1.8.0: auto ffmpeg for streams
+        if "auto_ffmpeg_streams" in data:
+            cfg["auto_ffmpeg_streams"] = bool(data["auto_ffmpeg_streams"])
         if "category_rules" in data:
             rules = data["category_rules"]
             if isinstance(rules, list):
@@ -634,6 +667,8 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 # v1.7.0
                 "categorize_enabled": False,
                 "category_rules": list(DEFAULT_CATEGORY_RULES),
+                # v1.8.0
+                "auto_ffmpeg_streams": True,
             }
             save_config(default_cfg)
             log_message("INFO", "Server config reset to defaults")
@@ -813,6 +848,45 @@ class DownloadHandler(BaseHTTPRequestHandler):
 
         # gopeed
         commands["gopeed"] = ["gopeed", "-d", download_dir, url] + arg_list
+
+        # v1.8.0: ffmpeg — ideal for HLS / DASH streams (.m3u8 / .mpd) and
+        # general media. Default to stream-copy (-c copy) for speed; users can
+        # override the output container via the filename extension. When no
+        # filename is provided we derive one based on whether the URL looks
+        # like a stream manifest (.ts for HLS, .mp4 for DASH).
+        if filename:
+            safe_name = sanitize_filename(filename)
+            out_path = os.path.join(download_dir, safe_name)
+        else:
+            if is_stream_url(url):
+                default_name = "stream.mp4" if url.lower().endswith(".mpd") else "stream.ts"
+            else:
+                default_name = "media.mp4"
+            out_path = os.path.join(download_dir, default_name)
+        # -y overwrite, -hide_banner / -loglevel error for quieter output,
+        # -c copy avoids re-encoding (fast + lossless). User args appended last
+        # so they can override codec / format if desired.
+        ffmpeg_cmd = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-i", url, "-c", "copy", out_path,
+        ]
+        # Forward cookies / custom headers via -headers (applies to all input
+        # requests ffmpeg makes, including segment fetches for HLS).
+        extra_headers = []
+        if cookies:
+            extra_headers.append(f"Cookie: {cookies}")
+        for k, v in headers.items():
+            extra_headers.append(f"{k}: {v}")
+        if proxy:
+            # ffmpeg understands http_proxy / https_proxy env vars; also pass
+            # -http_proxy via args for older builds. We rely on env vars set
+            # by _start_download, so only add the arg form when not already
+            # covered. Using both is harmless.
+            pass
+        if extra_headers:
+            # -headers expects a single string with each header terminated by \r\n
+            ffmpeg_cmd[1:1] = ["-headers", "\r\n".join(extra_headers) + "\r\n"]
+        commands["ffmpeg"] = ffmpeg_cmd + arg_list
 
         if platform.system() == "Windows":
             commands["idm"] = [
@@ -1033,6 +1107,10 @@ class DownloadHandler(BaseHTTPRequestHandler):
             if srv_ua:
                 headers["User-Agent"] = srv_ua
 
+        # v1.8.0: probe ffmpeg availability once for the whole batch (avoids
+        # running shutil.which on every URL).
+        ffmpeg_available = "ffmpeg" in detect_available_programs()
+
         for raw_url in urls:
             url = str(raw_url or "").strip()
             if not url:
@@ -1043,6 +1121,9 @@ class DownloadHandler(BaseHTTPRequestHandler):
             matched = match_url_rule(url, url_rules)
             if matched:
                 chosen = matched
+            # v1.8.0: auto-route stream URLs to ffmpeg in batch mode too
+            if cfg.get("auto_ffmpeg_streams", True) and is_stream_url(url) and chosen != "ffmpeg" and ffmpeg_available:
+                chosen = "ffmpeg"
 
             effective_dir = download_dir
             category_subfolder = ""

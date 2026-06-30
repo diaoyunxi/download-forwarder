@@ -1,8 +1,8 @@
 # Download Forwarder
 
-浏览器扩展，捕获下载请求并转发到本地下载管理器（wget / curl / IDM / NDM / Gopeed）。
+浏览器扩展，捕获下载请求并转发到本地下载管理器（wget / curl / IDM / NDM / Gopeed / ffmpeg）。
 
-> 当前版本：**v1.7.0**
+> 当前版本：**v1.8.0**
 
 ## 架构
 
@@ -35,7 +35,7 @@ python server/setup.py
 点击扩展图标：
 - 绿色「已连接」表示本地服务器运行正常
 - 切换开关启用下载捕获
-- 选择下载管理器（wget / curl / IDM / NDM / Gopeed）
+- 选择下载管理器（wget / curl / IDM / NDM / Gopeed / ffmpeg）
 - 可添加额外参数
 - 「主面板」支持单 URL 转发、批量转发（开关切换）、文件大小预检
 - 「嗅探」标签页可扫描当前页面的可下载链接并批量转发
@@ -46,11 +46,19 @@ python server/setup.py
 
 ### 基础功能
 - 自动拦截浏览器下载，转发到本地下载管理器
-- 支持 5 个下载器：wget / curl / Gopeed / IDM / NDM
+- 支持 6 个下载器：wget / curl / Gopeed / IDM / NDM / ffmpeg
 - 服务器端检测可用程序
 - 失败自动重试（默认 3 次）
 - 下载历史记录与统计（总计 / 成功 / 失败 / 按程序分类）
 - 导出历史为 JSON / CSV
+
+### v1.8.0 新增功能
+- **M3U8 / HLS / DASH 流媒体下载**：新增 `ffmpeg` 作为第 6 个下载器。服务端 `is_stream_url()` 识别 `.m3u8` / `.m3u` / `.mpd`；`_build_command` 为 ffmpeg 生成 `ffmpeg -y -hide_banner -loglevel error -i <url> -c copy <out>` 命令，自动转发 Cookie / 自定义请求头（经 `-headers`，对 HLS 分片请求同样生效），无文件名时按流类型回退为 `stream.ts` / `stream.mp4`
+- **流媒体自动路由**：新增「流媒体自动用 ffmpeg」开关（规则标签页，默认开启）。启用后服务端在 `/download` 与 `/batch` 中检测到流媒体 URL 且 ffmpeg 已安装时，自动从当前下载器切换到 ffmpeg，无需手动切换；可通过 `auto_ffmpeg_streams` 配置项关闭
+- **历史记录重试**：历史面板每条记录新增「重试」按钮，一键通过 `manual-forward` 路径重新提交该 URL；另提供「重试全部失败」按钮，批量重试当前历史中所有失败记录并汇总成功 / 失败数
+- **历史记录高级筛选**：历史面板新增状态筛选 chip（全部 / 成功 / 失败，带实时计数）、下载器筛选下拉、分类筛选下拉，可与原有文本搜索叠加；筛选状态下下拉选项随历史数据自动更新并保留当前选择
+- **三态主题（跟随系统）**：主题按钮由原深 / 浅二态扩展为 **浅色 → 深色 → 跟随系统 → 浅色** 三态循环。「跟随系统」模式通过 `window.matchMedia('(prefers-color-scheme: dark)')` 实时监听 OS 主题变化；存储字段由 `darkMode: boolean` 迁移为 `themeMode: "light"|"dark"|"auto"`，并兼容旧备份（自动迁移）
+- **重复下载提醒**：扩展后台在转发前扫描本地最近历史，若 URL 在可配置时间窗口内（默认 30 分钟）已下载过，弹出额外提醒通知（不阻断下载）。自动拦截 / 手动转发 / 批量转发 / 右键 / 快捷键 均生效；批量转发时合并为单条汇总提醒。可在「网络」标签页关闭或调整窗口时长（0~1440 分钟，0 = 关闭）
 
 ### v1.7.0 新增功能
 - **批量下载**：弹窗「手动 / 批量转发」卡片新增批量模式开关，可在文本框中粘贴多行 URL（每行一个，`#` 开头的行视为注释）一次性提交。服务端新增 `POST /batch` 端点统一处理，自动去重、记录每条结果并返回汇总（成功 / 失败 / 总数）
@@ -93,6 +101,8 @@ python server/setup.py
 - **标签页 UI**：弹窗内容拆分为「主面板 / 规则 / 历史 / 高级」四个标签页
 
 ### 早期版本
+- v1.8.0：ffmpeg 流媒体下载、流媒体自动路由、历史重试与高级筛选、三态主题（跟随系统）、重复下载提醒
+- v1.7.0：批量下载、文件大小预检、页面链接嗅探、自动分类归档
 - v1.6.0：Cookie 转发、自定义请求头、代理、URL 规则 UI、通知偏好、网络标签页
 - v1.5.0：自动更新检查
 - v1.4.0：右键菜单、键盘快捷键、工具栏徽章、深色模式、URL 白名单、手动转发、历史搜索、服务器日志查看器、设置备份与恢复、关于面板、来源标记、服务端过滤、标签页 UI
@@ -103,19 +113,20 @@ python server/setup.py
 
 ## 支持的平台
 
-- Windows (IDM / NDM / wget / curl)
-- Linux (wget / curl / Gopeed)
+- Windows (IDM / NDM / wget / curl / ffmpeg)
+- Linux (wget / curl / Gopeed / ffmpeg)
+- macOS (wget / curl / ffmpeg)
 
 ## 本地服务器 API
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/ping` | 健康检查，返回版本、平台、可用程序 |
-| GET | `/config` | 获取服务器配置 |
+| GET | `/config` | 获取服务器配置（v1.8.0 起含 `auto_ffmpeg_streams`） |
 | POST | `/config` | 更新服务器配置（部分字段） |
 | POST | `/config/reset` | 重置服务器配置为默认值 |
-| POST | `/download` | 提交下载任务（支持 `cookies` / `headers` / `proxy` 字段，v1.6.0；自动分类 v1.7.0） |
-| POST | `/batch` | 批量提交下载任务（v1.7.0，请求体含 `urls` 数组） |
+| POST | `/download` | 提交下载任务（支持 `cookies` / `headers` / `proxy` 字段，v1.6.0；自动分类 v1.7.0；流媒体自动路由至 ffmpeg，v1.8.0） |
+| POST | `/batch` | 批量提交下载任务（v1.7.0，请求体含 `urls` 数组；v1.8.0 起流媒体自动路由至 ffmpeg） |
 | GET | `/check?url=...` | 预检文件大小 / 文件名 / 类型（v1.7.0，HEAD 失败自动回退 Range GET） |
 | GET | `/history` | 获取下载历史（v1.7.0 起每条记录含 `category` 字段） |
 | POST | `/history/clear` | 清空下载历史 |
@@ -142,6 +153,8 @@ python server/setup.py
 ```
 
 > `cookies` / `headers` / `proxy` 由浏览器扩展自动捕获并下发；直接调用 API 时如未提供，服务器会回退到自身配置中的 `proxy_url` / `custom_referer` / `custom_user_agent`。
+
+> v1.8.0：`program` 可选值新增 `ffmpeg`（适合 M3U8 / HLS / DASH 流媒体）。当配置 `auto_ffmpeg_streams=true`（默认）且 URL 为 `.m3u8` / `.m3u` / `.mpd`、且 ffmpeg 已安装时，服务端会自动改用 ffmpeg，无需在请求中显式指定。
 
 ### `/batch` 请求体（v1.7.0）
 
@@ -200,14 +213,14 @@ GET /check?url=https://example.com/file.zip
 ## 文件结构
 
 ```
-├── manifest.json          # 扩展配置（v1.7.0，新增 scripting 权限、content_scripts、sniff-links 命令）
-├── background.js          # 后台服务（拦截 + 转发 + 右键菜单 + 快捷键 + 徽章 + Cookie 捕获 + 自动更新 + 批量 / 预检 / 嗅探）
-├── content.js             # 内容脚本（v1.7.0，页面链接嗅探）
-├── popup.html             # 弹出界面（标签页 + 深色模式 + 模态框 + 网络面板 + 嗅探面板 + 批量 / 预检 / 分类）
-├── popup.js               # 界面逻辑（含备份/恢复、日志查看、搜索、URL 规则管理、批量 / 预检 / 嗅探 / 自动分类）
+├── manifest.json          # 扩展配置（v1.8.0，新增 ffmpeg 下载器描述；v1.7.0 scripting 权限、content_scripts、sniff-links 命令）
+├── background.js          # 后台服务（拦截 + 转发 + 右键菜单 + 快捷键 + 徽章 + Cookie 捕获 + 自动更新 + 批量 / 预检 / 嗅探 + v1.8.0 重复下载提醒）
+├── content.js             # 内容脚本（v1.7.0 页面链接嗅探；v1.8.0 嗅探列表扩展 .m3u8/.m3u/.mpd）
+├── popup.html             # 弹出界面（标签页 + 三态主题 + 模态框 + 网络面板 + 嗅探面板 + 批量 / 预检 / 分类 + v1.8.0 历史筛选 / 重试 / 重复提醒 / ffmpeg 按钮 / 自动流媒体开关）
+├── popup.js               # 界面逻辑（含备份/恢复、日志查看、搜索、URL 规则管理、批量 / 预检 / 嗅探 / 自动分类 + v1.8.0 主题三态、历史筛选与重试、ffmpeg / 自动流媒体、重复提醒同步）
 ├── icons/                 # 扩展图标
 ├── server/
 │   ├── setup.py           # 安装脚本（开机自启 + 启动服务器）
-│   └── server.py          # 本地 HTTP 服务器（v1.7.0，新增 /check、/batch 端点与自动分类）
+│   └── server.py          # 本地 HTTP 服务器（v1.8.0，新增 ffmpeg 下载器、流媒体自动路由、auto_ffmpeg_streams 配置；v1.7.0 /check、/batch 端点与自动分类）
 └── README.md
 ```
