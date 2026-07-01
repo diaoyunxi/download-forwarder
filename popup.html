@@ -620,6 +620,68 @@
       margin-left: 4px;
       font-weight: 600;
     }
+    /* v1.9.0: task list items */
+    .task-item {
+      padding: 7px 8px;
+      border-bottom: 1px solid var(--border-soft);
+      font-size: 11px;
+      line-height: 1.5;
+    }
+    .task-item:last-child { border-bottom: none; }
+    .task-item-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 3px;
+    }
+    .task-program {
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 8px;
+      font-size: 10px;
+      text-transform: uppercase;
+      background: var(--accent-bg);
+      color: var(--accent);
+    }
+    .task-status {
+      font-size: 10px;
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 8px;
+    }
+    .task-status.running { background: var(--accent-bg); color: var(--accent); }
+    .task-status.completed { background: var(--success-bg); color: var(--success); }
+    .task-status.failed { background: var(--error-bg); color: var(--error); }
+    .task-status.cancelled { background: var(--hint-bg); color: var(--text-secondary); }
+    .task-url {
+      color: var(--accent);
+      word-break: break-all;
+      font-size: 10px;
+    }
+    .task-meta {
+      color: var(--text-tertiary);
+      font-size: 10px;
+      margin-top: 2px;
+    }
+    .task-cancel-btn {
+      padding: 2px 8px;
+      border: 1px solid var(--border-soft);
+      border-radius: 4px;
+      background: var(--card-bg);
+      color: var(--error);
+      cursor: pointer;
+      font-size: 10px;
+      transition: all 0.15s;
+    }
+    .task-cancel-btn:hover { background: var(--error-bg); border-color: var(--error); }
+    .task-cancel-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .task-empty {
+      padding: 14px;
+      text-align: center;
+      color: var(--text-tertiary);
+      font-size: 11px;
+      font-style: italic;
+    }
   </style>
 </head>
 <body>
@@ -641,6 +703,7 @@
     <div class="tab" data-tab="sniff">嗅探</div>
     <div class="tab" data-tab="rules">规则</div>
     <div class="tab" data-tab="network">网络</div>
+    <div class="tab" data-tab="tasks">任务</div>
     <div class="tab" data-tab="history">历史</div>
     <div class="tab" data-tab="advanced">高级</div>
   </div>
@@ -687,6 +750,10 @@
         <div class="program-btn" data-program="ffmpeg" title="支持 M3U8/HLS/DASH 流媒体">
           <div class="program-icon">&#x1F3AC;</div>
           <div class="program-name">ffmpeg</div>
+        </div>
+        <div class="program-btn" data-program="aria2c" title="多连接、断点续传、BT/磁力链">
+          <div class="program-icon">&#x1F4BE;</div>
+          <div class="program-name">aria2</div>
         </div>
       </div>
 
@@ -817,6 +884,7 @@
           <option value="idm">IDM</option>
           <option value="ndm">NDM</option>
           <option value="ffmpeg">ffmpeg</option>
+          <option value="aria2c">aria2c</option>
         </select>
         <button class="primary-btn" id="url-rule-add">添加</button>
       </div>
@@ -901,6 +969,25 @@
     </div>
   </div>
 
+  <!-- 任务面板（v1.9.0） -->
+  <div class="tab-panel" id="tab-tasks">
+    <div class="card">
+      <div class="card-title">
+        <span>活动任务</span>
+        <button class="icon-btn" id="tasks-refresh-btn">刷新</button>
+      </div>
+      <div class="hint" style="margin-bottom:6px;">
+        查看本地服务器上正在运行和最近完成的下载任务。可取消正在运行的任务（终止整个进程组）。
+      </div>
+      <div id="tasks-status" class="hint" style="margin-bottom:6px;"></div>
+      <div id="tasks-list" style="max-height:280px;overflow-y:auto;"></div>
+      <div class="manual-row" style="margin-top:8px;">
+        <span class="hint" id="tasks-count-label" style="flex:1;">0 个任务</span>
+        <button class="icon-btn danger" id="tasks-cancel-all-btn">取消全部运行中</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 历史面板 -->
   <div class="tab-panel" id="tab-history">
     <!-- 统计信息 -->
@@ -962,6 +1049,23 @@
 
   <!-- 高级面板 -->
   <div class="tab-panel" id="tab-advanced">
+    <!-- v1.9.0: Bearer Token 鉴权 -->
+    <div class="card">
+      <div class="card-title"><span>访问令牌（Bearer Token）</span></div>
+      <div class="hint" style="margin-bottom:6px;">
+        设置后，扩展与本地服务器之间的所有请求（除 /ping 外）都需要携带此令牌。留空则关闭鉴权（默认）。令牌会同时保存到扩展和服务器配置中。
+      </div>
+      <div class="manual-row">
+        <input type="password" class="text-input" id="auth-token-input" placeholder="留空 = 关闭鉴权" style="flex:1;">
+        <button class="icon-btn" id="auth-token-toggle-visibility" title="显示/隐藏令牌" style="white-space:nowrap;">&#x1F441;</button>
+      </div>
+      <div class="manual-row" style="margin-top:6px;">
+        <button class="primary-btn" id="auth-token-save-btn">保存令牌</button>
+        <button class="icon-btn danger" id="auth-token-clear-btn" style="margin-left:auto;">清除令牌</button>
+      </div>
+      <div class="hint" style="margin-top:6px;" id="auth-token-status"></div>
+    </div>
+
     <!-- 服务器日志 -->
     <div class="card">
       <div class="card-title">
@@ -988,7 +1092,7 @@
     <div class="card">
       <div class="card-title"><span>关于</span></div>
       <div style="font-size:11px;line-height:1.7;color:var(--text-secondary);">
-        <div><b>版本:</b> <span id="about-version">1.8.0</span></div>
+        <div><b>版本:</b> <span id="about-version">1.9.0</span></div>
         <div><b>服务器:</b> <span id="about-server">未连接</span></div>
         <div><b>平台:</b> <span id="about-platform">-</span></div>
         <div><b>可用程序:</b> <span id="about-programs">-</span></div>

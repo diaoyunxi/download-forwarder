@@ -12,6 +12,11 @@ let serverInfo = null;
 let recentDownloads = [];
 let activeDownloads = 0;
 
+// v1.9.0: optional Bearer token for authenticating requests to the local
+// server. When non-empty, all non-/ping requests carry an
+// `Authorization: Bearer <token>` header. Loaded from chrome.storage.local.
+let authToken = "";
+
 // --- Notification preferences (loaded from storage) ---
 let notifyPrefs = {
   silent_all: false,        // mute all notification sounds
@@ -26,12 +31,14 @@ let duplicateWarnMinutes = 30;
 
 async function loadNotifyPrefs() {
   try {
-    const data = await chrome.storage.local.get(["notifyPrefs", "warnDuplicates", "duplicateWarnMinutes"]);
+    const data = await chrome.storage.local.get(["notifyPrefs", "warnDuplicates", "duplicateWarnMinutes", "authToken"]);
     if (data.notifyPrefs && typeof data.notifyPrefs === "object") {
       notifyPrefs = Object.assign(notifyPrefs, data.notifyPrefs);
     }
     if (typeof data.warnDuplicates === "boolean") warnDuplicates = data.warnDuplicates;
     if (typeof data.duplicateWarnMinutes === "number") duplicateWarnMinutes = data.duplicateWarnMinutes;
+    // v1.9.0: load the Bearer token (empty string = auth disabled)
+    if (typeof data.authToken === "string") authToken = data.authToken;
   } catch (e) {
     /* ignore */
   }
@@ -52,6 +59,10 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes.duplicateWarnMinutes) {
     const v = changes.duplicateWarnMinutes.newValue;
     if (typeof v === "number") duplicateWarnMinutes = v;
+  }
+  // v1.9.0: keep the in-memory auth token in sync with the popup editor
+  if (area === "local" && changes.authToken) {
+    authToken = changes.authToken.newValue || "";
   }
 });
 
@@ -142,8 +153,18 @@ async function getReferer(tabId) {
 }
 
 async function fetchJSON(url, options) {
+  // v1.9.0: inject Bearer token into all requests when configured.
+  // /ping is exempt on the server side, but sending the header there is
+  // harmless and keeps the code path uniform.
+  const opts = { ...options };
+  if (authToken) {
+    opts.headers = {
+      ...(opts.headers || {}),
+      Authorization: "Bearer " + authToken,
+    };
+  }
   const response = await fetch(url, {
-    ...options,
+    ...opts,
     signal: AbortSignal.timeout(6000),
   });
   if (!response.ok && response.status !== 200) {
@@ -366,6 +387,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       serverConnected,
       serverInfo,
       activeDownloads,
+      authToken,
     });
     return true;
   }
@@ -390,7 +412,91 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sniffCurrentPage().then((r) => sendResponse(r));
     return true;
   }
+  // v1.9.0: list active/recent tasks from the local server
+  if (msg && msg.type === "list-tasks") {
+    listTasks().then((r) => sendResponse(r));
+    return true;
+  }
+  // v1.9.0: cancel one or more tasks on the local server
+  if (msg && msg.type === "cancel-tasks") {
+    cancelTasks(msg.task_ids || []).then((r) => sendResponse(r));
+    return true;
+  }
+  // v1.9.0: save the auth token to chrome.storage.local (synced to background
+  // via the storage.onChanged listener above).
+  if (msg && msg.type === "set-auth-token") {
+    authToken = msg.token || "";
+    chrome.storage.local.set({ authToken: msg.token || "" });
+    // Also push the token to the server's config so it persists across restarts
+    sendAuthTokenToServer(authToken).then((r) => sendResponse(r));
+    return true;
+  }
 });
+
+// --- v1.9.0: active task management ---
+// Fetch the list of active/recent tasks from the server's /tasks endpoint.
+async function listTasks() {
+  if (!serverConnected) {
+    return { status: "error", message: "本地服务器未运行", tasks: [] };
+  }
+  try {
+    const result = await fetchJSON(LOCAL_SERVER + "/tasks", { method: "GET" });
+    return result || { status: "error", message: "empty response", tasks: [] };
+  } catch (e) {
+    console.error("listTasks failed", e);
+    return { status: "error", message: String(e), tasks: [] };
+  }
+}
+
+// Cancel one or more tasks via POST /cancel on the local server.
+async function cancelTasks(taskIds) {
+  if (!Array.isArray(taskIds) || taskIds.length === 0) {
+    return { status: "error", message: "未提供任务 ID" };
+  }
+  if (!serverConnected) {
+    return { status: "error", message: "本地服务器未运行" };
+  }
+  try {
+    const result = await fetchJSON(LOCAL_SERVER + "/cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task_ids: taskIds }),
+    });
+    if (result && result.status === "ok") {
+      const cancelled = result.cancelled || 0;
+      if (cancelled > 0) {
+        notify(
+          "任务已取消",
+          `成功取消 ${cancelled} 个下载任务`,
+          "success"
+        );
+      }
+    }
+    return result || { status: "error", message: "empty response" };
+  } catch (e) {
+    console.error("cancelTasks failed", e);
+    return { status: "error", message: String(e) };
+  }
+}
+
+// Push the auth token to the server's config so it persists across restarts
+// and the server enforces the same token on direct API calls.
+async function sendAuthTokenToServer(token) {
+  if (!serverConnected) {
+    return { status: "error", message: "本地服务器未运行，token 仅保存在扩展端" };
+  }
+  try {
+    const result = await fetchJSON(LOCAL_SERVER + "/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ auth_token: token || "" }),
+    });
+    return result || { status: "error", message: "empty response" };
+  } catch (e) {
+    console.warn("sendAuthTokenToServer failed", e);
+    return { status: "error", message: String(e) };
+  }
+}
 
 // --- Common forward logic (used by context menu, shortcut, manual) ---
 async function forwardUrl(url, filename, source) {

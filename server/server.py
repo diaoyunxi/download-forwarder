@@ -2,7 +2,8 @@
 """
 Download Forwarder Local Server
 Listens on a fixed port and receives download requests from the browser extension.
-Forwards downloads to external download managers (wget, curl, NDM, IDM, Gopeed).
+Forwards downloads to external download managers (wget, curl, NDM, IDM, Gopeed,
+ffmpeg, aria2c).
 
 Enhanced with:
 - CORS support for browser extension communication
@@ -11,6 +12,10 @@ Enhanced with:
 - Download directory configuration
 - Proper logging
 - Security: bind to localhost only
+- v1.9.0: ThreadingHTTPServer (concurrent requests no longer block)
+- v1.9.0: optional Bearer token authentication for non-ping endpoints
+- v1.9.0: active task tracking (PID-level) + /tasks list + /cancel API
+- v1.9.0: aria2c downloader support
 """
 
 import json
@@ -23,18 +28,25 @@ import time
 import datetime
 import shutil
 import re
-import http.client
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import uuid
+import signal
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 # === Configuration ===
 PORT = 18735
-VERSION = "1.8.0"
-DEFAULT_PROGRAMS = ["wget", "curl", "idm", "ndm", "gopeed", "ffmpeg"]
+VERSION = "1.9.0"
+# v1.9.0: aria2c added as a 7th first-class downloader (multi-connection,
+# resumable, BitTorrent/Metalink capable). It is detected via shutil.which.
+DEFAULT_PROGRAMS = ["wget", "curl", "idm", "ndm", "gopeed", "ffmpeg", "aria2c"]
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".download_forwarder")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 HISTORY_FILE = os.path.join(CONFIG_DIR, "history.json")
 LOG_FILE = os.path.join(CONFIG_DIR, "server.log")
 MAX_HISTORY = 100
+# v1.9.0: finished tasks (completed/failed/cancelled) are pruned from the
+# in-memory task table after this many seconds so the table does not grow
+# unbounded over a long-running server.
+TASK_TTL_SECONDS = 1800
 
 # v1.7.0: default category rules used by auto-categorize. Each rule maps a
 # list of extensions (lowercase, no leading dot) to a subfolder name. The
@@ -55,6 +67,140 @@ _config_lock = threading.Lock()
 # Active downloads tracking
 _active_downloads = 0
 _active_downloads_lock = threading.Lock()
+
+# v1.9.0: active task registry. Maps task_id -> task dict.
+# Each task dict contains: task_id, pid, process (subprocess.Popen handle),
+# url, program, filename, started_at, status (running|completed|failed|cancelled),
+# ended_at, exit_code. The subprocess.Popen handle is kept so we can poll/wait
+# from a watcher thread without re-fetching by PID (which can be reused by
+# the OS after a process exits).
+_tasks = {}
+_tasks_lock = threading.Lock()
+
+
+def _gen_task_id():
+    """Generate a short, URL-safe unique task id."""
+    return uuid.uuid4().hex[:12]
+
+
+def _register_task(process, url, program, filename, source="auto"):
+    """Register a newly-spawned download subprocess and start a watcher thread
+    that updates the task status when the process exits. Returns the task_id.
+    """
+    task_id = _gen_task_id()
+    started = datetime.datetime.now()
+    with _tasks_lock:
+        _tasks[task_id] = {
+            "task_id": task_id,
+            "pid": process.pid,
+            "url": url,
+            "program": program,
+            "filename": filename,
+            "source": source,
+            "started_at": started.strftime("%Y-%m-%d %H:%M:%S"),
+            "started_ts": started.timestamp(),
+            "status": "running",
+            "ended_at": "",
+            "ended_ts": 0.0,
+            "exit_code": None,
+        }
+
+    def _watcher():
+        # Wait for the process to exit. subprocess.Popen.wait() blocks the
+        # watcher thread (not the request thread), and returns the exit code.
+        try:
+            rc = process.wait()
+        except Exception as e:
+            rc = -1
+            log_message("WARNING", f"task {task_id} watcher error: {e}")
+        ended = datetime.datetime.now()
+        with _tasks_lock:
+            if task_id in _tasks:
+                # Don't overwrite a "cancelled" status set by _cancel_task.
+                if _tasks[task_id]["status"] == "running":
+                    _tasks[task_id]["status"] = "completed" if rc == 0 else "failed"
+                _tasks[task_id]["exit_code"] = rc
+                _tasks[task_id]["ended_at"] = ended.strftime("%Y-%m-%d %H:%M:%S")
+                _tasks[task_id]["ended_ts"] = ended.timestamp()
+
+    # daemon=True so the watcher never blocks server shutdown.
+    threading.Thread(target=_watcher, daemon=True).start()
+    return task_id
+
+
+def _cancel_task(task_id):
+    """Terminate a running task's process group. Returns (ok, message)."""
+    with _tasks_lock:
+        task = _tasks.get(task_id)
+        if not task:
+            return False, "task not found"
+        if task["status"] != "running":
+            return False, f"task is already {task['status']}"
+        pid = task["pid"]
+
+    try:
+        if os.name == "nt":
+            # /T kills the whole process tree, /F forces termination.
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                check=False,
+            )
+        else:
+            # We launch the downloaders with start_new_session=True on POSIX,
+            # so the child is the leader of its own process group. Killing
+            # the entire group ensures helper processes (e.g. ffmpeg segment
+            # fetchers, aria2c connection workers) are also terminated.
+            try:
+                pgid = os.getpgid(pid)
+                os.killpg(pgid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            except Exception:
+                # Fall back to a direct SIGTERM on the leader.
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+        with _tasks_lock:
+            if task_id in _tasks:
+                _tasks[task_id]["status"] = "cancelled"
+                _tasks[task_id]["ended_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                _tasks[task_id]["ended_ts"] = datetime.datetime.now().timestamp()
+                _tasks[task_id]["exit_code"] = -1
+        log_message("INFO", f"Task {task_id} (pid {pid}, {task.get('program','?')}) cancelled")
+        return True, "cancelled"
+    except Exception as e:
+        return False, str(e)
+
+
+def _prune_tasks():
+    """Remove finished tasks older than TASK_TTL_SECONDS to bound memory use."""
+    cutoff = time.time() - TASK_TTL_SECONDS
+    with _tasks_lock:
+        stale = []
+        for tid, t in _tasks.items():
+            if t["status"] == "running":
+                continue
+            end_ts = t.get("ended_ts") or 0.0
+            if end_ts and end_ts < cutoff:
+                stale.append(tid)
+        for tid in stale:
+            _tasks.pop(tid, None)
+
+
+def _list_tasks():
+    """Snapshot of all known tasks (running + recently finished)."""
+    with _tasks_lock:
+        # Shallow-copy each dict so callers can serialize without holding the
+        # lock; drop the non-JSON-serializable Popen handle.
+        out = []
+        for t in _tasks.values():
+            copy = {k: v for k, v in t.items() if k != "process"}
+            out.append(copy)
+        # Sort: running first, then by started_ts desc.
+        out.sort(key=lambda x: (x.get("status") != "running", -x.get("started_ts", 0)))
+        return out
 
 
 def _ensure_config_dir():
@@ -96,6 +242,10 @@ def load_config():
     # v1.8.0: when True, stream URLs (.m3u8/.m3u/.mpd) are automatically routed
     # to ffmpeg if it is installed, regardless of the chosen default program.
     data.setdefault("auto_ffmpeg_streams", True)
+    # v1.9.0: optional Bearer token. When non-empty, all endpoints except
+    # /ping and OPTIONS require `Authorization: Bearer <token>`. Empty string
+    # disables authentication (kept for backwards compatibility).
+    data.setdefault("auth_token", "")
     return data
 
 
@@ -270,7 +420,9 @@ class DownloadHandler(BaseHTTPRequestHandler):
     def _send_cors_headers(self):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        # v1.9.0: allow Authorization header so the extension can send the
+        # Bearer token required when auth_token is configured server-side.
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -285,6 +437,59 @@ class DownloadHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
 
+    # v1.9.0: token authentication -------------------------------------------------
+    # /ping and OPTIONS are always public so the extension can detect a running
+    # server and check available programs even before the user has configured a
+    # token. Every other endpoint requires `Authorization: Bearer <token>` when
+    # the server's auth_token config is non-empty.
+    def _is_auth_required(self):
+        cfg = load_config()
+        return bool((cfg.get("auth_token") or "").strip())
+
+    def _check_auth(self):
+        """Returns True when the request is authorized. When auth is disabled
+        (empty auth_token) the request is always authorized.
+        """
+        if not self._is_auth_required():
+            return True
+        cfg = load_config()
+        expected = (cfg.get("auth_token") or "").strip()
+        if not expected:
+            return True
+        header = self.headers.get("Authorization", "") or ""
+        # Accept "Bearer <token>" (RFC 6750) or a raw token for convenience.
+        token = ""
+        if header.startswith("Bearer "):
+            token = header[len("Bearer "):].strip()
+        elif header:
+            token = header.strip()
+        # Also accept ?token=... query parameter as a fallback for browser-initiated
+        # downloads (e.g. clicking export URLs which cannot easily set headers).
+        if not token:
+            from urllib.parse import urlparse, parse_qs
+            params = parse_qs(urlparse(self.path).query)
+            token = (params.get("token") or [""])[0]
+        if not token:
+            return False
+        # Constant-time comparison to avoid trivial timing attacks.
+        if len(token) != len(expected):
+            return False
+        result = 0
+        for a, b in zip(token, expected):
+            result |= ord(a) ^ ord(b)
+        return result == 0
+
+    def _send_unauthorized(self):
+        self.send_response(401)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self._send_cors_headers()
+        self.send_header("WWW-Authenticate", 'Bearer realm="download-forwarder"')
+        self.end_headers()
+        self.wfile.write(json.dumps({
+            "status": "error",
+            "message": "Unauthorized: missing or invalid auth token",
+        }).encode("utf-8"))
+
     def do_GET(self):
         """Health check, info, history, config endpoints"""
         if self.path == "/ping" or self.path.startswith("/ping?"):
@@ -294,18 +499,47 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 "version": VERSION,
                 "platform": platform.system(),
                 "available_programs": detect_available_programs(),
+                # v1.9.0: tell the extension whether auth is required so the
+                # popup can prompt the user to enter a token.
+                "auth_required": self._is_auth_required(),
+            })
+        # v1.9.0: /tasks is an auth-protected endpoint that lists all known
+        # download tasks (running + recently finished). Used by the popup's
+        # task manager UI.
+        elif self.path == "/tasks" or self.path.startswith("/tasks?"):
+            if not self._check_auth():
+                self._send_unauthorized()
+                return
+            _prune_tasks()
+            self._send_json({
+                "status": "ok",
+                "tasks": _list_tasks(),
+                "running": sum(1 for t in _list_tasks() if t.get("status") == "running"),
             })
         elif self.path == "/history" or self.path.startswith("/history?"):
+            if not self._check_auth():
+                self._send_unauthorized()
+                return
             self._send_json({
                 "status": "ok",
                 "history": load_history(),
             })
         elif self.path == "/config" or self.path.startswith("/config?"):
+            if not self._check_auth():
+                self._send_unauthorized()
+                return
             cfg = load_config()
             cfg["status"] = "ok"
             cfg["available_programs"] = detect_available_programs()
+            # Never echo the full auth_token back to the client; expose only
+            # a boolean so the popup can show "protected" state.
+            cfg["auth_enabled"] = bool((cfg.get("auth_token") or "").strip())
+            cfg.pop("auth_token", None)
             self._send_json(cfg)
         elif self.path == "/logs" or self.path.startswith("/logs?"):
+            if not self._check_auth():
+                self._send_unauthorized()
+                return
             from urllib.parse import urlparse, parse_qs
             params = parse_qs(urlparse(self.path).query)
             try:
@@ -323,16 +557,30 @@ class DownloadHandler(BaseHTTPRequestHandler):
                     pass
             self._send_json({"status": "ok", "logs": logs, "count": len(logs)})
         elif self.path.startswith("/export"):
+            if not self._check_auth():
+                self._send_unauthorized()
+                return
             self._handle_export()
         elif self.path.startswith("/stats"):
+            if not self._check_auth():
+                self._send_unauthorized()
+                return
             self._handle_stats()
         elif self.path.startswith("/check"):
+            if not self._check_auth():
+                self._send_unauthorized()
+                return
             self._handle_check()
         else:
             self._send_json({"status": "error", "message": "Not found"}, status=404)
 
     def do_POST(self):
-        """Receive download / config update / history clear requests"""
+        """Receive download / config update / history clear / cancel requests"""
+        # v1.9.0: token auth applies to all POST endpoints (no /ping POST here).
+        if not self._check_auth():
+            self._send_unauthorized()
+            return
+
         # Routes that don't require a JSON body
         if self.path.startswith("/config/reset") or self.path.startswith("/history/clear"):
             if self.path.startswith("/config/reset"):
@@ -354,10 +602,41 @@ class DownloadHandler(BaseHTTPRequestHandler):
             self._handle_download(data)
         elif self.path.startswith("/batch"):
             self._handle_batch(data)
+        elif self.path.startswith("/cancel"):
+            # v1.9.0: cancel a running download task by task_id.
+            self._handle_cancel(data)
         elif self.path.startswith("/config"):
             self._handle_config_update(data)
         else:
             self._send_error("Not found", 404)
+
+    def _handle_cancel(self, data):
+        """v1.9.0: cancel a running download task.
+
+        Request body: {"task_id": "..."} or {"task_ids": ["...", "..."]}
+        Response: {"status": "ok", "results": [{task_id, ok, message}], "cancelled": N}
+        """
+        task_ids = []
+        if isinstance(data.get("task_id"), str):
+            task_ids.append(data["task_id"])
+        if isinstance(data.get("task_ids"), list):
+            task_ids.extend(str(t) for t in data["task_ids"] if t)
+        if not task_ids:
+            self._send_error("Missing task_id(s)", 400)
+            return
+        results = []
+        cancelled = 0
+        for tid in task_ids:
+            ok, msg = _cancel_task(tid)
+            results.append({"task_id": tid, "ok": ok, "message": msg})
+            if ok:
+                cancelled += 1
+        self._send_json({
+            "status": "ok",
+            "cancelled": cancelled,
+            "total": len(task_ids),
+            "results": results,
+        })
 
     def _handle_download(self, data):
         url = (data.get("url") or "").strip()
@@ -505,6 +784,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
             result = self._start_download(
                 url, program, args, filename, effective_dir,
                 speed_limit, cookies=cookies, headers=headers, proxy=proxy,
+                source=source,
             )
             if result.get("status") == "success":
                 self._register_download()
@@ -602,6 +882,11 @@ class DownloadHandler(BaseHTTPRequestHandler):
         # v1.8.0: auto ffmpeg for streams
         if "auto_ffmpeg_streams" in data:
             cfg["auto_ffmpeg_streams"] = bool(data["auto_ffmpeg_streams"])
+        # v1.9.0: optional Bearer token. An empty string clears/disables auth.
+        # The extension never sends the token back in /config GET (we strip it
+        # there), so this is the only way to set it short of editing config.json.
+        if "auth_token" in data:
+            cfg["auth_token"] = str(data["auth_token"] or "").strip()
         if "category_rules" in data:
             rules = data["category_rules"]
             if isinstance(rules, list):
@@ -669,6 +954,8 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 "category_rules": list(DEFAULT_CATEGORY_RULES),
                 # v1.8.0
                 "auto_ffmpeg_streams": True,
+                # v1.9.0
+                "auth_token": "",
             }
             save_config(default_cfg)
             log_message("INFO", "Server config reset to defaults")
@@ -684,7 +971,8 @@ class DownloadHandler(BaseHTTPRequestHandler):
         )
 
     def _start_download(self, url, program, args, filename, download_dir,
-                       speed_limit=0, cookies="", headers=None, proxy=""):
+                       speed_limit=0, cookies="", headers=None, proxy="",
+                       source="auto"):
         headers = headers or {}
         cmd = self._build_command(
             url, program, args, filename, download_dir, speed_limit,
@@ -708,7 +996,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 env["HTTPS_PROXY"] = proxy
                 env["all_proxy"] = proxy
                 env["ALL_PROXY"] = proxy
-            subprocess.Popen(
+            proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -716,6 +1004,14 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 env=env,
                 creationflags=flags if os.name == "nt" else 0,
                 start_new_session=(os.name != "nt"),
+            )
+            # v1.9.0: register the subprocess so it can be tracked and cancelled.
+            task_id = _register_task(
+                proc,
+                url=url,
+                program=program,
+                filename=filename or get_filename_from_url(url),
+                source=source,
             )
             extra = []
             if cookies:
@@ -725,7 +1021,13 @@ class DownloadHandler(BaseHTTPRequestHandler):
             if headers:
                 extra.append(f"with {len(headers)} custom header(s)")
             suffix = (" (" + ", ".join(extra) + ")") if extra else ""
-            return {"status": "success", "message": f"Download started via {program}{suffix}", "url": url}
+            return {
+                "status": "success",
+                "message": f"Download started via {program}{suffix}",
+                "url": url,
+                "task_id": task_id,
+                "pid": proc.pid,
+            }
         except FileNotFoundError:
             return {
                 "status": "error",
@@ -887,6 +1189,35 @@ class DownloadHandler(BaseHTTPRequestHandler):
             # -headers expects a single string with each header terminated by \r\n
             ffmpeg_cmd[1:1] = ["-headers", "\r\n".join(extra_headers) + "\r\n"]
         commands["ffmpeg"] = ffmpeg_cmd + arg_list
+
+        # v1.9.0: aria2c — multi-connection / resumable downloader. Defaults:
+        #   -c           resume partial download (.aria2 control file)
+        #   -x16          up to 16 connections per server (speed boost)
+        #   -s16          split into 16 segments
+        #   -k1M          1 MiB piece size
+        #   --file-allocation=none  avoid preallocating on slow disks
+        #   --console-log-level=error  quieter output
+        # Cookies / headers are forwarded via --header; proxy via --all-proxy.
+        aria2_cmd = [
+            "aria2c", "-c",
+            "-x16", "-s16", "-k1M",
+            "--file-allocation=none",
+            "--console-log-level=error",
+            "--summary-interval=0",
+            "-d", download_dir,
+        ]
+        if filename:
+            aria2_cmd.extend(["-o", sanitize_filename(filename)])
+        if speed_limit > 0:
+            aria2_cmd.extend(["--max-download-limit", f"{speed_limit}k"])
+        if cookies:
+            aria2_cmd.extend(["--header", f"Cookie: {cookies}"])
+        for k, v in headers.items():
+            aria2_cmd.extend(["--header", f"{k}: {v}"])
+        if proxy:
+            aria2_cmd.extend(["--all-proxy", proxy])
+        aria2_cmd.append(url)
+        commands["aria2c"] = aria2_cmd + arg_list
 
         if platform.system() == "Windows":
             commands["idm"] = [
@@ -1144,6 +1475,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 result = self._start_download(
                     url, chosen, args, filename, effective_dir,
                     speed_limit, cookies=cookies, headers=headers, proxy=proxy,
+                    source=source,
                 )
                 if result.get("status") == "success":
                     self._register_download()
@@ -1159,6 +1491,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 "message": result.get("message", ""),
                 "program": chosen,
                 "filename": filename,
+                "task_id": result.get("task_id", ""),
             })
             entry = {
                 "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1264,16 +1597,29 @@ class DownloadHandler(BaseHTTPRequestHandler):
 
 
 def run_server():
-    server = HTTPServer(("127.0.0.1", PORT), DownloadHandler)
+    # v1.9.0: ThreadingHTTPServer spawns a new thread per request so a slow
+    # /check (HEAD + ranged-GET fallback) no longer blocks /ping or /download.
+    server = ThreadingHTTPServer(("127.0.0.1", PORT), DownloadHandler)
+    # daemon_threads=True so worker threads don't block shutdown.
+    server.daemon_threads = True
     _ensure_config_dir()
     log_message("INFO", f"Download Forwarder server listening on http://127.0.0.1:{PORT}")
     log_message("INFO", f"Platform: {platform.system()} {platform.release()}")
     log_message("INFO", f"Available programs: {detect_available_programs()}")
+    cfg = load_config()
+    if (cfg.get("auth_token") or "").strip():
+        log_message("INFO", "Auth token is set; non-ping endpoints require Bearer token")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        server.shutdown()
+        # Shutdown from the same thread serve_forever runs in is safe here
+        # because we are inside the except block (serve_forever has returned).
         log_message("INFO", "Server stopped by user")
+    finally:
+        try:
+            server.server_close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

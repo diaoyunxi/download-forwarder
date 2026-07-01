@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Download Forwarder",
-  "version": "1.8.0",
-  "description": "捕获浏览器下载请求并转发到本地下载管理器（wget/curl/IDM/NDM/Gopeed/ffmpeg），支持 Cookie 转发、自定义请求头、代理、URL 规则、右键菜单、快捷键、深色/跟随系统主题、批量下载、文件大小预检、链接嗅探、自动分类、历史重试与筛选、M3U8/HLS 流媒体下载、重复下载提醒",
+  "version": "1.9.0",
+  "description": "捕获浏览器下载请求并转发到本地下载管理器（wget/curl/IDM/NDM/Gopeed/ffmpeg/aria2c），支持 Cookie 转发、自定义请求头、代理、URL 规则、右键菜单、快捷键、深色/跟随系统主题、批量下载、文件大小预检、链接嗅探、自动分类、历史重试与筛选、M3U8/HLS 流媒体下载、重复下载提醒、aria2 多连接下载、活动任务管理与取消、Bearer Token 鉴权",
   "permissions": [
     "downloads",
     "storage",

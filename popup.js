@@ -1,6 +1,6 @@
 // Download Forwarder - Popup UI
 const LOCAL_SERVER = "http://127.0.0.1:18735";
-const EXT_VERSION = "1.8.0";
+const EXT_VERSION = "1.9.0";
 
 // --- Element refs ---
 const toggleEl = document.getElementById("toggle");
@@ -177,6 +177,8 @@ async function init() {
     "autoFfmpegStreams",
     "warnDuplicates",
     "duplicateWarnMinutes",
+    // v1.9.0
+    "authToken",
   ]);
   enabled = data.enabled || false;
   selectedProgram = data.program || "wget";
@@ -218,6 +220,8 @@ async function init() {
   duplicateWarnMinutes = typeof data.duplicateWarnMinutes === "number"
     ? data.duplicateWarnMinutes
     : 30;
+  // v1.9.0
+  authToken = data.authToken || "";
 
   applyTheme();
   updateToggle();
@@ -237,6 +241,8 @@ async function init() {
   updateAutoFfmpegToggle();
   updateDupWarnToggle();
   dupWarnMinutesEl.value = duplicateWarnMinutes;
+  // v1.9.0
+  populateAuthTokenUI();
   setupSystemThemeListener();
   renderSniffList();
   updateServerStatus(data.serverConnected, data.serverInfo);
@@ -249,6 +255,12 @@ async function init() {
     if (live && live.serverConnected) {
       updateServerStatus(true, live.serverInfo);
       updateAbout(live.serverInfo);
+    }
+    // v1.9.0: sync auth token from background (it may have been updated
+    // by the storage.onChanged listener since the popup last opened)
+    if (live && typeof live.authToken === "string" && live.authToken !== authToken) {
+      authToken = live.authToken;
+      populateAuthTokenUI();
     }
   } catch (e) {
     /* background may be sleeping */
@@ -270,6 +282,15 @@ async function init() {
         platform: info.platform,
         available_programs: availablePrograms,
       });
+      // v1.9.0: if the server requires auth but we don't have a token, warn
+      // the user in the auth token status area so they know to set one.
+      if (info.auth_required && !authToken) {
+        const status = document.getElementById("auth-token-status");
+        if (status) {
+          status.textContent = "服务器已启用鉴权，但扩展端未设置令牌。请在下方输入令牌后保存。";
+          status.style.color = "var(--error)";
+        }
+      }
     }
   } catch (e) {
     // server might not be running, keep existing state
@@ -336,10 +357,38 @@ async function init() {
   } catch (e) {}
 }
 
-function fetchJSON(url) {
-  return fetch(url, { method: "GET", signal: AbortSignal.timeout(3000) }).then(
-    (r) => r.json()
-  );
+// v1.9.0: auth token (loaded from storage, injected into all server requests)
+let authToken = "";
+
+function _authHeaders(extra) {
+  const h = { ...(extra || {}) };
+  if (authToken) {
+    h["Authorization"] = "Bearer " + authToken;
+  }
+  return h;
+}
+
+function fetchJSON(url, options) {
+  const opts = {
+    method: "GET",
+    signal: AbortSignal.timeout(3000),
+    ...(options || {}),
+  };
+  opts.headers = _authHeaders(opts.headers);
+  return fetch(url, opts).then((r) => r.json());
+}
+
+// v1.9.0: POST helper that automatically injects the Bearer token and
+// JSON content-type. Returns the parsed JSON response.
+async function postJSON(url, body) {
+  const opts = {
+    method: "POST",
+    headers: _authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(body || {}),
+    signal: AbortSignal.timeout(5000),
+  };
+  const r = await fetch(url, opts);
+  return r.json();
 }
 
 function mergeHistory(ext, server) {
@@ -427,6 +476,10 @@ document.querySelectorAll(".tab").forEach((tab) => {
       .forEach((p) => p.classList.remove("active"));
     tab.classList.add("active");
     document.getElementById("tab-" + tab.dataset.tab).classList.add("active");
+    // v1.9.0: auto-load tasks when the tasks tab is activated
+    if (tab.dataset.tab === "tasks") {
+      loadTasks();
+    }
   });
 });
 
@@ -485,12 +538,7 @@ downloadDirEl.addEventListener("change", async () => {
   if (!dir) return;
   chrome.storage.local.set({ downloadDir: dir });
   try {
-    await fetch(LOCAL_SERVER + "/config", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ download_dir: dir }),
-      signal: AbortSignal.timeout(3000),
-    });
+    await postJSON(LOCAL_SERVER + "/config", { download_dir: dir });
     serverDirLabel.textContent = "已保存: " + dir;
   } catch (e) {
     serverDirLabel.textContent = "服务器未连接";
@@ -559,31 +607,26 @@ speedLimit.addEventListener("change", () => {
 
 async function syncSettingsToServer() {
   try {
-    await fetch(LOCAL_SERVER + "/config", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        filetype_filter_enabled: filetypeFilterEnabled,
-        filetype_filter: filetypeFilter.value.trim(),
-        blacklist_enabled: blacklistEnabled,
-        url_blacklist: urlBlacklist.value.trim(),
-        whitelist_enabled: whitelistEnabled,
-        url_whitelist: urlWhitelist.value.trim(),
-        concurrent_limit: parseInt(concurrentLimit.value) || 5,
-        speed_limit: parseInt(speedLimit.value) || 0,
-        // v1.6.0
-        url_rules: urlRules,
-        custom_referer: customRefererEl.value.trim(),
-        custom_user_agent: customUserAgentEl.value.trim(),
-        proxy_url: proxyUrlEl.value.trim(),
-        forward_cookies: forwardCookies,
-        // v1.7.0
-        categorize_enabled: categorizeEnabled,
-        category_rules: categoryRules,
-        // v1.8.0
-        auto_ffmpeg_streams: autoFfmpegStreams,
-      }),
-      signal: AbortSignal.timeout(3000),
+    await postJSON(LOCAL_SERVER + "/config", {
+      filetype_filter_enabled: filetypeFilterEnabled,
+      filetype_filter: filetypeFilter.value.trim(),
+      blacklist_enabled: blacklistEnabled,
+      url_blacklist: urlBlacklist.value.trim(),
+      whitelist_enabled: whitelistEnabled,
+      url_whitelist: urlWhitelist.value.trim(),
+      concurrent_limit: parseInt(concurrentLimit.value) || 5,
+      speed_limit: parseInt(speedLimit.value) || 0,
+      // v1.6.0
+      url_rules: urlRules,
+      custom_referer: customRefererEl.value.trim(),
+      custom_user_agent: customUserAgentEl.value.trim(),
+      proxy_url: proxyUrlEl.value.trim(),
+      forward_cookies: forwardCookies,
+      // v1.7.0
+      categorize_enabled: categorizeEnabled,
+      category_rules: categoryRules,
+      // v1.8.0
+      auto_ffmpeg_streams: autoFfmpegStreams,
     });
   } catch (e) {
     console.warn("Failed to sync settings to server", e);
@@ -1292,10 +1335,7 @@ clearHistoryBtn.addEventListener("click", async () => {
   if (!confirm("确定清空所有下载历史吗？")) return;
   chrome.storage.local.set({ recentDownloads: [] });
   try {
-    await fetch(LOCAL_SERVER + "/history/clear", {
-      method: "POST",
-      signal: AbortSignal.timeout(3000),
-    });
+    await postJSON(LOCAL_SERVER + "/history/clear", {});
   } catch (e) {}
   currentHistory = [];
   renderHistory([]);
@@ -1507,6 +1547,8 @@ restoreApply.addEventListener("click", async () => {
       "autoFfmpegStreams",
       "warnDuplicates",
       "duplicateWarnMinutes",
+      // v1.9.0
+      "authToken",
     ];
     const toSet = {};
     for (const k of allowed) {
@@ -1542,17 +1584,14 @@ restoreApply.addEventListener("click", async () => {
       "category_rules",
       // v1.8.0
       "auto_ffmpeg_streams",
+      // v1.9.0
+      "auth_token",
     ];
     for (const f of fields) {
       if (f in s) body[f] = s[f];
     }
     try {
-      await fetch(LOCAL_SERVER + "/config", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(3000),
-      });
+      await postJSON(LOCAL_SERVER + "/config", body);
     } catch (e) {
       console.warn("server restore failed", e);
     }
@@ -1567,16 +1606,229 @@ resetBtn.addEventListener("click", async () => {
   if (!confirm("确定恢复默认设置吗？这会清除扩展所有自定义配置。")) return;
   await chrome.storage.local.clear();
   try {
-    await fetch(LOCAL_SERVER + "/config/reset", {
-      method: "POST",
-      signal: AbortSignal.timeout(3000),
-    });
+    await postJSON(LOCAL_SERVER + "/config/reset", {});
   } catch (e) {
     /* server may not support */
   }
   alert("已重置，弹窗将重新加载");
   location.reload();
 });
+
+// ===== v1.9.0: Bearer Token 鉴权配置 =====
+
+function populateAuthTokenUI() {
+  const input = document.getElementById("auth-token-input");
+  const status = document.getElementById("auth-token-status");
+  if (!input || !status) return;
+  input.value = authToken || "";
+  if (authToken) {
+    status.textContent = "已设置令牌（" + authToken.length + " 字符）。鉴权已启用。";
+    status.style.color = "var(--success)";
+  } else {
+    status.textContent = "未设置令牌。鉴权已关闭（默认）。";
+    status.style.color = "var(--text-tertiary)";
+  }
+}
+
+document.getElementById("auth-token-save-btn").addEventListener("click", async () => {
+  const input = document.getElementById("auth-token-input");
+  const status = document.getElementById("auth-token-status");
+  const token = (input.value || "").trim();
+  authToken = token;
+  try {
+    // 通过 background 同步保存到 chrome.storage.local 并推送到服务器
+    const result = await chrome.runtime.sendMessage({
+      type: "set-auth-token",
+      token: token,
+    });
+    if (result && result.status === "ok") {
+      status.textContent = "令牌已保存并同步到服务器。";
+      status.style.color = "var(--success)";
+    } else if (result && result.status === "error") {
+      // 令牌已保存到扩展端，但服务器同步失败
+      status.textContent = "令牌已保存到扩展端（服务器同步失败: " + (result.message || "未知错误") + "）";
+      status.style.color = "var(--error)";
+    } else {
+      status.textContent = "令牌已保存到扩展端。";
+      status.style.color = "var(--success)";
+    }
+  } catch (e) {
+    // background 可能未响应，直接保存到 storage
+    chrome.storage.local.set({ authToken: token });
+    status.textContent = "令牌已保存到扩展端（后台未响应）。";
+    status.style.color = "var(--text-tertiary)";
+  }
+  populateAuthTokenUI();
+});
+
+document.getElementById("auth-token-clear-btn").addEventListener("click", async () => {
+  authToken = "";
+  document.getElementById("auth-token-input").value = "";
+  try {
+    await chrome.runtime.sendMessage({ type: "set-auth-token", token: "" });
+  } catch (e) {
+    chrome.storage.local.set({ authToken: "" });
+  }
+  populateAuthTokenUI();
+});
+
+document.getElementById("auth-token-toggle-visibility").addEventListener("click", () => {
+  const input = document.getElementById("auth-token-input");
+  if (input.type === "password") {
+    input.type = "text";
+  } else {
+    input.type = "password";
+  }
+});
+
+// ===== v1.9.0: 活动任务管理 =====
+
+async function loadTasks() {
+  const listEl = document.getElementById("tasks-list");
+  const statusEl = document.getElementById("tasks-status");
+  const countEl = document.getElementById("tasks-count-label");
+  if (!listEl) return;
+
+  statusEl.textContent = "正在加载…";
+  try {
+    const result = await chrome.runtime.sendMessage({ type: "list-tasks" });
+    if (result && result.status === "ok") {
+      const tasks = result.tasks || [];
+      renderTasks(tasks);
+      const running = tasks.filter((t) => t.status === "running").length;
+      countEl.textContent = `${tasks.length} 个任务（${running} 个运行中）`;
+      statusEl.textContent = "";
+    } else if (result && result.status === "error") {
+      listEl.innerHTML = '<div class="task-empty">' + (result.message || "加载失败") + '</div>';
+      countEl.textContent = "0 个任务";
+      statusEl.textContent = result.message || "";
+    }
+  } catch (e) {
+    listEl.innerHTML = '<div class="task-empty">无法获取任务列表</div>';
+    countEl.textContent = "0 个任务";
+    statusEl.textContent = String(e);
+  }
+}
+
+function renderTasks(tasks) {
+  const listEl = document.getElementById("tasks-list");
+  if (!listEl) return;
+
+  if (!tasks || tasks.length === 0) {
+    listEl.innerHTML = '<div class="task-empty">暂无任务</div>';
+    return;
+  }
+
+  const statusLabels = {
+    running: "运行中",
+    completed: "已完成",
+    failed: "失败",
+    cancelled: "已取消",
+  };
+
+  listEl.innerHTML = tasks.map((t) => {
+    const isRunning = t.status === "running";
+    const filename = t.filename || "(未命名)";
+    const url = t.url || "";
+    const program = t.program || "?";
+    const started = t.started_at || "";
+    const ended = t.ended_at || "";
+    const statusText = statusLabels[t.status] || t.status;
+    const exitCode = t.exit_code !== null && t.exit_code !== undefined
+      ? " 退出码: " + t.exit_code
+      : "";
+
+    return (
+      '<div class="task-item">' +
+        '<div class="task-item-header">' +
+          '<span class="task-program">' + escapeHtml(program) + "</span>" +
+          '<span class="task-status ' + t.status + '">' + statusText + "</span>" +
+        "</div>" +
+        '<div class="task-url">' + escapeHtml(filename) + "</div>" +
+        '<div class="task-meta">' +
+          (started ? "开始: " + started : "") +
+          (ended ? "  结束: " + ended : "") +
+          exitCode +
+          (t.pid ? "  PID: " + t.pid : "") +
+        "</div>" +
+        (isRunning
+          ? '<div style="margin-top:4px;text-align:right;">' +
+              '<button class="task-cancel-btn" data-task-id="' + escapeHtml(t.task_id) + '">取消</button>' +
+            "</div>"
+          : "") +
+      "</div>"
+    );
+  }).join("");
+
+  // 绑定取消按钮事件
+  listEl.querySelectorAll(".task-cancel-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const taskId = btn.dataset.taskId;
+      if (!taskId) return;
+      btn.disabled = true;
+      btn.textContent = "取消中…";
+      try {
+        const result = await chrome.runtime.sendMessage({
+          type: "cancel-tasks",
+          task_ids: [taskId],
+        });
+        if (result && result.status === "ok") {
+          // 刷新任务列表
+          setTimeout(() => loadTasks(), 500);
+        } else {
+          btn.disabled = false;
+          btn.textContent = "取消";
+          alert("取消失败: " + (result && result.message ? result.message : "未知错误"));
+        }
+      } catch (e) {
+        btn.disabled = false;
+        btn.textContent = "取消";
+        alert("取消失败: " + String(e));
+      }
+    });
+  });
+}
+
+document.getElementById("tasks-refresh-btn").addEventListener("click", () => {
+  loadTasks();
+});
+
+document.getElementById("tasks-cancel-all-btn").addEventListener("click", async () => {
+  const listEl = document.getElementById("tasks-list");
+  const runningIds = [];
+  listEl.querySelectorAll(".task-cancel-btn").forEach((btn) => {
+    runningIds.push(btn.dataset.taskId);
+  });
+  if (runningIds.length === 0) {
+    alert("没有正在运行的任务");
+    return;
+  }
+  if (!confirm("确定取消全部 " + runningIds.length + " 个正在运行的任务吗？")) return;
+  try {
+    const result = await chrome.runtime.sendMessage({
+      type: "cancel-tasks",
+      task_ids: runningIds,
+    });
+    if (result && result.status === "ok") {
+      setTimeout(() => loadTasks(), 500);
+    } else {
+      alert("批量取消失败: " + (result && result.message ? result.message : "未知错误"));
+    }
+  } catch (e) {
+    alert("批量取消失败: " + String(e));
+  }
+});
+
+// HTML 转义辅助函数，防止任务信息中的特殊字符破坏 DOM
+function escapeHtml(str) {
+  if (str === null || str === undefined) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
 
 // Start
 init();

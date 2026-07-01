@@ -1,8 +1,8 @@
 # Download Forwarder
 
-浏览器扩展，捕获下载请求并转发到本地下载管理器（wget / curl / IDM / NDM / Gopeed / ffmpeg）。
+浏览器扩展，捕获下载请求并转发到本地下载管理器（wget / curl / IDM / NDM / Gopeed / ffmpeg / aria2c）。
 
-> 当前版本：**v1.8.0**
+> 当前版本：**v1.9.0**
 
 ## 架构
 
@@ -21,7 +21,7 @@ python server/setup.py
 此脚本会：
 - 切换 pip 到清华源（如未配置）
 - 检查并安装依赖
-- 添加开机自启（Windows 注册表 / Linux systemd）
+- 添加开机自启（Windows 注册表 / Linux systemd/crontab / macOS LaunchAgent）
 - 启动本地服务器
 
 ### 2. 安装浏览器扩展
@@ -35,22 +35,33 @@ python server/setup.py
 点击扩展图标：
 - 绿色「已连接」表示本地服务器运行正常
 - 切换开关启用下载捕获
-- 选择下载管理器（wget / curl / IDM / NDM / Gopeed / ffmpeg）
+- 选择下载管理器（wget / curl / IDM / NDM / Gopeed / ffmpeg / aria2c）
 - 可添加额外参数
 - 「主面板」支持单 URL 转发、批量转发（开关切换）、文件大小预检
 - 「嗅探」标签页可扫描当前页面的可下载链接并批量转发
 - 「规则」标签页可启用自动分类，按扩展名归档到子文件夹
+- 「任务」标签页（v1.9.0）可查看服务器上正在运行和最近完成的下载任务，支持单个或批量取消
+- 「高级」标签页可配置 Bearer Token 鉴权（v1.9.0）、查看服务器日志、备份 / 恢复设置
 - 快捷键：`Alt+Shift+D` 切换拦截 / `Alt+Shift+F` 转发当前页 / 嗅探命令可在 `chrome://extensions/shortcuts` 自定义
 
 ## 功能特性
 
 ### 基础功能
 - 自动拦截浏览器下载，转发到本地下载管理器
-- 支持 6 个下载器：wget / curl / Gopeed / IDM / NDM / ffmpeg
+- 支持 7 个下载器：wget / curl / Gopeed / IDM / NDM / ffmpeg / aria2c
 - 服务器端检测可用程序
 - 失败自动重试（默认 3 次）
 - 下载历史记录与统计（总计 / 成功 / 失败 / 按程序分类）
 - 导出历史为 JSON / CSV
+
+### v1.9.0 新增功能
+- **aria2c 多连接下载**：新增 `aria2c` 作为第 7 个下载器。服务端 `_build_command` 为 aria2c 生成 `aria2c -c -x16 -s16 -k1M --file-allocation=none --console-log-level=error --summary-interval=0 -d <dir> [-o <name>] [--max-download-limit=<speed>k] [--header=Cookie: ...] [--header=Key: Value] [--all-proxy=<proxy>] <url>` 命令，支持 16 路并发连接、断点续传、自动转发 Cookie / 自定义请求头 / 代理。适用于大文件高速下载
+- **活动任务追踪与管理**：服务端新增进程级任务注册表，每个下载子进程启动后注册到 `_tasks` 字典并由 daemon watcher 线程监控。扩展新增「任务」标签页，可查看所有运行中 / 已完成 / 失败 / 已取消的任务（含 PID、开始 / 结束时间、退出码），可单个或批量取消正在运行的任务（POSIX 下通过 `os.killpg` 终止整个进程组，Windows 下通过 `taskkill /T /F` 终止进程树）。已完成任务 30 分钟后自动清理
+- **Bearer Token 鉴权**：新增可选的 Bearer Token 访问鉴权。在「高级」标签页设置令牌后，扩展与服务器之间的所有请求（除 `/ping` 和 OPTIONS 外）都需要携带 `Authorization: Bearer <token>` 头部。留空则关闭鉴权（默认，向后兼容）。令牌同时保存到扩展和服务器配置中，支持 `?token=...` 查询参数备用通道
+- **ThreadingHTTPServer 并发处理**：服务器从单线程 `HTTPServer` 升级为 `ThreadingHTTPServer`，并发请求不再互相阻塞。`daemon_threads = True` 确保主进程退出时所有工作线程自动终止
+- **macOS LaunchAgent 自启动**：`setup.py` 新增 macOS 平台的 LaunchAgent 自启动支持。在 `~/Library/LaunchAgents/` 下创建 `com.github.diaoyunxi.download-forwarder.plist`，支持 `KeepAlive`（进程退出后自动重启）和 `RunAtLoad`（加载时立即启动），并重定向标准输出 / 错误到日志文件
+- **新增端点**：`GET /tasks`（获取活动任务列表）、`POST /cancel`（取消一个或多个任务）
+- **新增配置项**：`auth_token`（可选 Bearer 令牌）
 
 ### v1.8.0 新增功能
 - **M3U8 / HLS / DASH 流媒体下载**：新增 `ffmpeg` 作为第 6 个下载器。服务端 `is_stream_url()` 识别 `.m3u8` / `.m3u` / `.mpd`；`_build_command` 为 ffmpeg 生成 `ffmpeg -y -hide_banner -loglevel error -i <url> -c copy <out>` 命令，自动转发 Cookie / 自定义请求头（经 `-headers`，对 HLS 分片请求同样生效），无文件名时按流类型回退为 `stream.ts` / `stream.mp4`
@@ -101,6 +112,7 @@ python server/setup.py
 - **标签页 UI**：弹窗内容拆分为「主面板 / 规则 / 历史 / 高级」四个标签页
 
 ### 早期版本
+- v1.9.0：aria2c 多连接下载、活动任务追踪与管理、Bearer Token 鉴权、ThreadingHTTPServer 并发、macOS LaunchAgent 自启动
 - v1.8.0：ffmpeg 流媒体下载、流媒体自动路由、历史重试与高级筛选、三态主题（跟随系统）、重复下载提醒
 - v1.7.0：批量下载、文件大小预检、页面链接嗅探、自动分类归档
 - v1.6.0：Cookie 转发、自定义请求头、代理、URL 规则 UI、通知偏好、网络标签页
@@ -113,26 +125,30 @@ python server/setup.py
 
 ## 支持的平台
 
-- Windows (IDM / NDM / wget / curl / ffmpeg)
-- Linux (wget / curl / Gopeed / ffmpeg)
-- macOS (wget / curl / ffmpeg)
+- Windows (IDM / NDM / wget / curl / ffmpeg / aria2c)
+- Linux (wget / curl / Gopeed / ffmpeg / aria2c)
+- macOS (wget / curl / ffmpeg / aria2c)
 
 ## 本地服务器 API
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/ping` | 健康检查，返回版本、平台、可用程序 |
-| GET | `/config` | 获取服务器配置（v1.8.0 起含 `auto_ffmpeg_streams`） |
-| POST | `/config` | 更新服务器配置（部分字段） |
+| GET | `/ping` | 健康检查，返回版本、平台、可用程序、`auth_required` 字段（v1.9.0） |
+| GET | `/config` | 获取服务器配置（v1.8.0 起含 `auto_ffmpeg_streams`；v1.9.0 起含 `auth_enabled`，不回传 `auth_token`） |
+| POST | `/config` | 更新服务器配置（部分字段，v1.9.0 起支持 `auth_token`） |
 | POST | `/config/reset` | 重置服务器配置为默认值 |
-| POST | `/download` | 提交下载任务（支持 `cookies` / `headers` / `proxy` 字段，v1.6.0；自动分类 v1.7.0；流媒体自动路由至 ffmpeg，v1.8.0） |
+| POST | `/download` | 提交下载任务（支持 `cookies` / `headers` / `proxy` 字段，v1.6.0；自动分类 v1.7.0；流媒体自动路由至 ffmpeg，v1.8.0；aria2c 下载器，v1.9.0） |
 | POST | `/batch` | 批量提交下载任务（v1.7.0，请求体含 `urls` 数组；v1.8.0 起流媒体自动路由至 ffmpeg） |
+| GET | `/tasks` | 获取活动任务列表（v1.9.0，返回运行中 / 最近完成的任务及其状态） |
+| POST | `/cancel` | 取消一个或多个下载任务（v1.9.0，请求体含 `task_id` 或 `task_ids` 数组） |
 | GET | `/check?url=...` | 预检文件大小 / 文件名 / 类型（v1.7.0，HEAD 失败自动回退 Range GET） |
 | GET | `/history` | 获取下载历史（v1.7.0 起每条记录含 `category` 字段） |
 | POST | `/history/clear` | 清空下载历史 |
 | GET | `/stats` | 获取下载统计 |
 | GET | `/logs?limit=N` | 获取最近 N 条服务器日志（1-500，默认 50） |
 | GET | `/export?format=json\|csv` | 导出历史 |
+
+> v1.9.0：当 `auth_token` 配置非空时，除 `/ping` 和 OPTIONS 外的所有端点都需要 `Authorization: Bearer <token>` 头部（或 `?token=...` 查询参数）。
 
 ### `/download` 请求体（v1.6.0）
 
@@ -155,6 +171,8 @@ python server/setup.py
 > `cookies` / `headers` / `proxy` 由浏览器扩展自动捕获并下发；直接调用 API 时如未提供，服务器会回退到自身配置中的 `proxy_url` / `custom_referer` / `custom_user_agent`。
 
 > v1.8.0：`program` 可选值新增 `ffmpeg`（适合 M3U8 / HLS / DASH 流媒体）。当配置 `auto_ffmpeg_streams=true`（默认）且 URL 为 `.m3u8` / `.m3u` / `.mpd`、且 ffmpeg 已安装时，服务端会自动改用 ffmpeg，无需在请求中显式指定。
+
+> v1.9.0：`program` 可选值新增 `aria2c`（多连接高速下载）。aria2c 支持 16 路并发连接（`-x16 -s16`）、断点续传（`-c`）、自动转发 Cookie / 自定义请求头 / 代理。下载响应中新增 `task_id` 和 `pid` 字段，可用于后续取消。
 
 ### `/batch` 请求体（v1.7.0）
 
@@ -210,17 +228,81 @@ GET /check?url=https://example.com/file.zip
 }
 ```
 
+### `/tasks` 响应（v1.9.0）
+
+```
+GET /tasks
+```
+
+```json
+{
+  "status": "ok",
+  "tasks": [
+    {
+      "task_id": "a1b2c3d4e5f6",
+      "pid": 12345,
+      "url": "https://example.com/large-file.zip",
+      "program": "aria2c",
+      "filename": "large-file.zip",
+      "source": "auto",
+      "started_at": "2026-07-02 14:30:00",
+      "started_ts": 1782933000.0,
+      "status": "running",
+      "ended_at": "",
+      "ended_ts": 0.0,
+      "exit_code": null
+    }
+  ]
+}
+```
+
+### `/cancel` 请求与响应（v1.9.0）
+
+```
+POST /cancel
+```
+
+请求体（支持单个或批量）：
+
+```json
+{
+  "task_ids": ["a1b2c3d4e5f6", "b2c3d4e5f6g7"]
+}
+```
+
+或单个任务：
+
+```json
+{
+  "task_id": "a1b2c3d4e5f6"
+}
+```
+
+响应：
+
+```json
+{
+  "status": "ok",
+  "cancelled": 2,
+  "failed": 0,
+  "results": [
+    { "task_id": "a1b2c3d4e5f6", "ok": true, "message": "cancelled" },
+    { "task_id": "b2c3d4e5f6g7", "ok": true, "message": "cancelled" }
+  ]
+}
+```
+
 ## 文件结构
 
 ```
-├── manifest.json          # 扩展配置（v1.8.0，新增 ffmpeg 下载器描述；v1.7.0 scripting 权限、content_scripts、sniff-links 命令）
-├── background.js          # 后台服务（拦截 + 转发 + 右键菜单 + 快捷键 + 徽章 + Cookie 捕获 + 自动更新 + 批量 / 预检 / 嗅探 + v1.8.0 重复下载提醒）
+├── manifest.json          # 扩展配置（v1.9.0，新增 aria2c 下载器描述、Bearer Token 鉴权；v1.8.0 ffmpeg；v1.7.0 scripting 权限、content_scripts、sniff-links 命令）
+├── background.js          # 后台服务（拦截 + 转发 + 右键菜单 + 快捷键 + 徽章 + Cookie 捕获 + 自动更新 + 批量 / 预检 / 嗅探 + v1.8.0 重复下载提醒 + v1.9.0 任务管理 / token 注入）
 ├── content.js             # 内容脚本（v1.7.0 页面链接嗅探；v1.8.0 嗅探列表扩展 .m3u8/.m3u/.mpd）
-├── popup.html             # 弹出界面（标签页 + 三态主题 + 模态框 + 网络面板 + 嗅探面板 + 批量 / 预检 / 分类 + v1.8.0 历史筛选 / 重试 / 重复提醒 / ffmpeg 按钮 / 自动流媒体开关）
-├── popup.js               # 界面逻辑（含备份/恢复、日志查看、搜索、URL 规则管理、批量 / 预检 / 嗅探 / 自动分类 + v1.8.0 主题三态、历史筛选与重试、ffmpeg / 自动流媒体、重复提醒同步）
+├── popup.html             # 弹出界面（标签页 + 三态主题 + 模态框 + 网络面板 + 嗅探面板 + 批量 / 预检 / 分类 + v1.8.0 历史筛选 / 重试 / 重复提醒 / ffmpeg 按钮 / 自动流媒体开关 + v1.9.0 任务面板 / token 配置 / aria2 按钮）
+├── popup.js               # 界面逻辑（含备份/恢复、日志查看、搜索、URL 规则管理、批量 / 预检 / 嗅探 / 自动分类 + v1.8.0 主题三态、历史筛选与重试、ffmpeg / 自动流媒体、重复提醒同步 + v1.9.0 任务列表渲染 / 取消、token 配置、postJSON 鉴权封装）
 ├── icons/                 # 扩展图标
 ├── server/
-│   ├── setup.py           # 安装脚本（开机自启 + 启动服务器）
-│   └── server.py          # 本地 HTTP 服务器（v1.8.0，新增 ffmpeg 下载器、流媒体自动路由、auto_ffmpeg_streams 配置；v1.7.0 /check、/batch 端点与自动分类）
+│   ├── setup.py           # 安装脚本（v1.9.0 新增 macOS LaunchAgent 自启动；Windows 注册表 / Linux systemd/crontab；runpy 启动服务器）
+│   └── server.py          # 本地 HTTP 服务器（v1.9.0，新增 aria2c 下载器、ThreadingHTTPServer、Bearer Token 鉴权、任务追踪与取消、/tasks 和 /cancel 端点；v1.8.0 ffmpeg、流媒体自动路由；v1.7.0 /check、/batch 端点与自动分类）
 └── README.md
 ```
