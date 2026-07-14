@@ -41,23 +41,31 @@ from urllib.parse import urlparse, parse_qs
 # v1.9.1: urllib 连接池，避免每次预检都新建 opener
 _urllib_pool_lock = threading.Lock()
 _urllib_opener = None
+_urllib_opener_proxy = None  # 记录当前 opener 对应的 proxy 字符串
 
 def _get_urllib_opener(proxy=""):
-    """获取或创建带连接池复用的 urllib opener。当 proxy 参数变化时重建。"""
-    global _urllib_opener
+    """获取或创建带连接池复用的 urllib opener。当 proxy 参数变化时重建。
+
+    安全修复：直接比较 proxy 字符串而非 handler 类型，避免不同 proxy 地址
+    因 handler 类型相同（均为 ProxyHandler）而错误复用旧 opener 导致代理不生效。
+    """
+    global _urllib_opener, _urllib_opener_proxy
     with _urllib_pool_lock:
-        if proxy:
-            handler = urllib.request.ProxyHandler({"http": proxy, "https": proxy})
-            new_opener = urllib.request.build_opener(handler)
-        else:
-            new_opener = urllib.request.build_opener()
-        # 仅当 opener 类型变化时才替换（相同 proxy 复用同一个）
-        if _urllib_opener is None or type(_urllib_opener.handlers[0]) != type(new_opener.handlers[0]):
-            _urllib_opener = new_opener
+        # 直接比较 proxy 字符串：仅当 proxy 变化时才重建 opener
+        if _urllib_opener is None or _urllib_opener_proxy != proxy:
+            if proxy:
+                handler = urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+                _urllib_opener = urllib.request.build_opener(handler)
+            else:
+                _urllib_opener = urllib.request.build_opener()
+            _urllib_opener_proxy = proxy
         return _urllib_opener
 
 # === Configuration ===
 PORT = 18735
+# 绑定地址硬编码为本机回环地址，禁止监听外部网络接口，避免远程访问风险。
+# 若需更改，必须在此处显式修改并确认安全影响；启动时会强制校验。
+HOST = "127.0.0.1"
 VERSION = "1.9.0"
 # v1.9.0: aria2c added as a 7th first-class downloader (multi-connection,
 # resumable, BitTorrent/Metalink capable). It is detected via shutil.which.
@@ -438,6 +446,45 @@ def detect_available_programs():
     return unique
 
 
+# === 请求频率限制（问题11）===
+# 每分钟最多 60 个请求，防止滥用导致服务器过载。可配置：调整 _RATE_LIMIT_MAX。
+_RATE_LIMIT_MAX = 60  # 每分钟最大请求数
+_RATE_LIMIT_WINDOW = 60  # 时间窗口（秒）
+_rate_limit_lock = threading.Lock()
+_rate_limit_times = []  # 记录最近请求的时间戳列表
+
+
+def _check_rate_limit():
+    """检查请求频率是否超限。返回 True 表示允许，False 表示被限流。"""
+    now = time.time()
+    with _rate_limit_lock:
+        # 清理超出时间窗口的旧记录
+        cutoff = now - _RATE_LIMIT_WINDOW
+        while _rate_limit_times and _rate_limit_times[0] < cutoff:
+            _rate_limit_times.pop(0)
+        if len(_rate_limit_times) >= _RATE_LIMIT_MAX:
+            return False
+        _rate_limit_times.append(now)
+        return True
+
+
+# 安全：下载器参数中的危险 shell 元字符集合。
+# 虽然 subprocess 以列表形式调用（shell=False），元字符不会被 shell 直接解释，
+# 但部分下载器可能将参数二次传递给子 shell，因此做防御性过滤。
+_SHELL_META_CHARS = set(";|&$`><")
+
+
+def sanitize_arguments(args_str):
+    """过滤参数字符串中的危险 shell 元字符，并拆分为参数列表。
+
+    移除 ;|&$`>< 等元字符后按空白拆分，返回安全的参数列表。
+    """
+    if not args_str:
+        return []
+    cleaned = "".join(ch for ch in args_str if ch not in _SHELL_META_CHARS)
+    return cleaned.split()
+
+
 def sanitize_filename(filename):
     if not filename:
         return ""
@@ -605,8 +652,27 @@ class DownloadHandler(BaseHTTPRequestHandler):
             "message": "Unauthorized: missing or invalid auth token",
         }).encode("utf-8"))
 
+    def _rate_limited(self):
+        """检查请求频率限制，超限则发送 429 响应并返回 True。"""
+        if not _check_rate_limit():
+            self.send_response(429)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self._send_cors_headers()
+            self.send_header("Retry-After", str(_RATE_LIMIT_WINDOW))
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "status": "error",
+                "message": "请求过于频繁，请稍后再试",
+            }).encode("utf-8"))
+            return True
+        return False
+
     def do_GET(self):
         """Health check, info, history, config endpoints"""
+        # /ping 健康检查豁免频率限制；其他端点应用限流
+        if not (self.path == "/ping" or self.path.startswith("/ping?")):
+            if self._rate_limited():
+                return
         if self.path == "/ping" or self.path.startswith("/ping?"):
             self._send_json({
                 "status": "ok",
@@ -690,6 +756,9 @@ class DownloadHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         """Receive download / config update / history clear / cancel requests"""
+        # 应用请求频率限制（POST 端点均需限流）
+        if self._rate_limited():
+            return
         # v1.9.0: token auth applies to all POST endpoints (no /ping POST here).
         if not self._check_auth():
             self._send_unauthorized()
@@ -1121,6 +1190,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 stderr=subprocess.PIPE,
                 cwd=download_dir,
                 env=env,
+                shell=False,
                 creationflags=flags if os.name == "nt" else 0,
                 start_new_session=(os.name != "nt"),
             )
@@ -1169,7 +1239,9 @@ class DownloadHandler(BaseHTTPRequestHandler):
 
     def _build_command(self, url, program, args, filename, download_dir,
                        speed_limit=0, cookies="", headers=None, proxy=""):
-        arg_list = args.split() if args else []
+        # 安全过滤：移除 shell 元字符，防止命令注入（subprocess 已使用 shell=False，
+        # 此处为防御性过滤，避免下载器二次解释参数）
+        arg_list = sanitize_arguments(args)
         headers = headers or {}
 
         # Helper: build the list of --header / -H flags for cookies and any
@@ -1732,13 +1804,17 @@ class DownloadHandler(BaseHTTPRequestHandler):
 
 
 def run_server():
+    # 安全校验：绑定地址必须是本机回环地址，防止服务器暴露到外部网络
+    if HOST not in ("127.0.0.1", "localhost", "::1"):
+        log_message("ERROR", f"安全校验失败：绑定地址 {HOST} 不是本机回环地址，拒绝启动")
+        sys.exit(1)
     # v1.9.0: ThreadingHTTPServer spawns a new thread per request so a slow
     # /check (HEAD + ranged-GET fallback) no longer blocks /ping or /download.
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), DownloadHandler)
+    server = ThreadingHTTPServer((HOST, PORT), DownloadHandler)
     # daemon_threads=True so worker threads don't block shutdown.
     server.daemon_threads = True
     _ensure_config_dir()
-    log_message("INFO", f"Download Forwarder server listening on http://127.0.0.1:{PORT}")
+    log_message("INFO", f"Download Forwarder server listening on http://{HOST}:{PORT}")
     log_message("INFO", f"Platform: {platform.system()} {platform.release()}")
     log_message("INFO", f"Available programs: {detect_available_programs()}")
     cfg = load_config()

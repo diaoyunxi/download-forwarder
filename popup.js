@@ -177,8 +177,6 @@ async function init() {
     "autoFfmpegStreams",
     "warnDuplicates",
     "duplicateWarnMinutes",
-    // v1.9.0
-    "authToken",
   ]);
   enabled = data.enabled || false;
   selectedProgram = data.program || "wget";
@@ -220,8 +218,9 @@ async function init() {
   duplicateWarnMinutes = typeof data.duplicateWarnMinutes === "number"
     ? data.duplicateWarnMinutes
     : 30;
-  // v1.9.0
-  authToken = data.authToken || "";
+  // v1.9.0: Bearer token 改用 chrome.storage.session 存储（敏感令牌不持久化）
+  const sessionData = await chrome.storage.session.get(["authToken"]);
+  authToken = sessionData.authToken || "";
 
   applyTheme();
   updateToggle();
@@ -1510,6 +1509,13 @@ refreshLogsBtn.addEventListener("click", async () => {
 backupBtn.addEventListener("click", async () => {
   // Pull extension storage + server config
   const ext = await chrome.storage.local.get(null);
+  // v1.9.0: Bearer token 存于 session，需单独获取后合并到备份中
+  try {
+    const sess = await chrome.storage.session.get(["authToken"]);
+    if (typeof sess.authToken === "string") ext.authToken = sess.authToken;
+  } catch (e) {
+    /* session 不可用时跳过 */
+  }
   let serverCfg = null;
   try {
     serverCfg = await fetchJSON(LOCAL_SERVER + "/config");
@@ -1587,14 +1593,31 @@ restoreApply.addEventListener("click", async () => {
       "autoFfmpegStreams",
       "warnDuplicates",
       "duplicateWarnMinutes",
-      // v1.9.0
+      // v1.9.0: authToken 存于 session，恢复时需单独写入 session 存储
       "authToken",
     ];
     const toSet = {};
+    let restoreAuthToken = null;
+    let hasAuthToken = false;
     for (const k of allowed) {
-      if (k in data.extension) toSet[k] = data.extension[k];
+      if (k in data.extension) {
+        if (k === "authToken") {
+          restoreAuthToken = data.extension[k];
+          hasAuthToken = true;
+        } else {
+          toSet[k] = data.extension[k];
+        }
+      }
     }
     await chrome.storage.local.set(toSet);
+    // Bearer token 写入 session 存储（与扩展端保存逻辑一致）
+    if (hasAuthToken) {
+      try {
+        await chrome.storage.session.set({ authToken: restoreAuthToken || "" });
+      } catch (e) {
+        console.warn("恢复 authToken 到 session 失败:", e);
+      }
+    }
   }
 
   // Restore server config
@@ -1645,6 +1668,12 @@ restoreApply.addEventListener("click", async () => {
 resetBtn.addEventListener("click", async () => {
   if (!confirm("确定恢复默认设置吗？这会清除扩展所有自定义配置。")) return;
   await chrome.storage.local.clear();
+  // v1.9.0: 同时清除 session 中存储的 Bearer token
+  try {
+    await chrome.storage.session.remove("authToken");
+  } catch (e) {
+    /* ignore */
+  }
   try {
     await postJSON(LOCAL_SERVER + "/config/reset", {});
   } catch (e) {
@@ -1693,8 +1722,8 @@ document.getElementById("auth-token-save-btn").addEventListener("click", async (
       status.style.color = "var(--success)";
     }
   } catch (e) {
-    // background 可能未响应，直接保存到 storage
-    chrome.storage.local.set({ authToken: token });
+    // background 可能未响应，直接保存到 session storage
+    chrome.storage.session.set({ authToken: token });
     status.textContent = "令牌已保存到扩展端（后台未响应）。";
     status.style.color = "var(--text-tertiary)";
   }
@@ -1707,7 +1736,7 @@ document.getElementById("auth-token-clear-btn").addEventListener("click", async 
   try {
     await chrome.runtime.sendMessage({ type: "set-auth-token", token: "" });
   } catch (e) {
-    chrome.storage.local.set({ authToken: "" });
+    chrome.storage.session.set({ authToken: "" });
   }
   populateAuthTokenUI();
 });

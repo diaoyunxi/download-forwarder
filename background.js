@@ -2,6 +2,9 @@
 // Handles download interception, server communication, notifications, state,
 // context menu, keyboard shortcuts, and toolbar badge.
 
+// 本地下载转发服务器地址。
+// 可配置：需与 server.py 中 PORT 常量保持一致；若修改端口或地址，
+// 须同步更新 manifest.json 的 host_permissions，否则扩展无法访问服务器。
 const LOCAL_SERVER = "http://127.0.0.1:18735";
 const PING_INTERVAL = 15000;
 const PING_ALARM = "df-ping";
@@ -21,6 +24,9 @@ let authToken = "";
 let notifyPrefs = {
   silent_all: false,        // mute all notification sounds
   only_errors: false,       // only show error/failure notifications
+  // 下载完成通知开关。开启后扩展会轮询本地服务器任务状态，在检测到下载
+  // 完成（成功/失败）时发送通知。默认关闭以避免增加额外请求；可在 popup 通知偏好中开启。
+  notify_on_complete: false,
 };
 
 // v1.8.0: duplicate-download warning. When enabled (default), forwarding a URL
@@ -31,16 +37,19 @@ let duplicateWarnMinutes = 30;
 
 async function loadNotifyPrefs() {
   try {
-    const data = await chrome.storage.local.get(["notifyPrefs", "warnDuplicates", "duplicateWarnMinutes", "authToken"]);
+    const data = await chrome.storage.local.get(["notifyPrefs", "warnDuplicates", "duplicateWarnMinutes"]);
     if (data.notifyPrefs && typeof data.notifyPrefs === "object") {
       notifyPrefs = Object.assign(notifyPrefs, data.notifyPrefs);
     }
     if (typeof data.warnDuplicates === "boolean") warnDuplicates = data.warnDuplicates;
     if (typeof data.duplicateWarnMinutes === "number") duplicateWarnMinutes = data.duplicateWarnMinutes;
-    // v1.9.0: load the Bearer token (empty string = auth disabled)
-    if (typeof data.authToken === "string") authToken = data.authToken;
+    // v1.9.0: Bearer token 改用 chrome.storage.session 存储（MV3），
+    // 避免敏感令牌在浏览器关闭后仍持久化于 local 存储中
+    const sessionData = await chrome.storage.session.get(["authToken"]);
+    if (typeof sessionData.authToken === "string") authToken = sessionData.authToken;
   } catch (e) {
-    /* ignore */
+    // 读取偏好失败时记录警告，避免静默吞错导致问题难以排查
+    console.warn("loadNotifyPrefs 读取存储失败:", e);
   }
 }
 loadNotifyPrefs();
@@ -60,8 +69,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
     const v = changes.duplicateWarnMinutes.newValue;
     if (typeof v === "number") duplicateWarnMinutes = v;
   }
-  // v1.9.0: keep the in-memory auth token in sync with the popup editor
-  if (area === "local" && changes.authToken) {
+  // v1.9.0: Bearer token 改用 chrome.storage.session 存储，监听 session 区域变化
+  if (area === "session" && changes.authToken) {
     authToken = changes.authToken.newValue || "";
   }
 });
@@ -198,15 +207,55 @@ function updateBadge() {
   }
 }
 
+// 下载活跃数估算超时时间（毫秒）。由于无法精确感知每个下载的完成时间，
+// 这里采用固定时间窗口后递减的估算逻辑：超过该时间未收到新的状态更新，
+// 即认为下载已结束并回收计数。可根据网络环境调整。
+const ACTIVE_DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
+
 function bumpActive(delta) {
   activeDownloads = Math.max(0, activeDownloads + delta);
   updateBadge();
-  // Decrement after a window; downloads typically take a few minutes
+  // 增加计数后，在估算超时窗口后自动递减，避免 badge 计数永久不归零
   if (delta > 0) {
     setTimeout(() => {
       activeDownloads = Math.max(0, activeDownloads - 1);
       updateBadge();
-    }, 5 * 60 * 1000);
+    }, ACTIVE_DOWNLOAD_TIMEOUT_MS);
+  }
+}
+
+// --- Download completion polling (v1.9.0) ---
+// 记录上次轮询时的任务状态，用于检测状态变化（running -> completed/failed）
+let _lastTaskStates = {};
+
+// 轮询本地服务器任务状态，检测下载完成并在开启 notify_on_complete 时发送通知。
+async function pollCompletedTasks() {
+  // 未开启下载完成通知时跳过，减少不必要的 /tasks 请求
+  if (!notifyPrefs.notify_on_complete) return;
+  if (!serverConnected) return;
+  try {
+    const result = await fetchJSON(LOCAL_SERVER + "/tasks", { method: "GET" });
+    if (!result || result.status !== "ok" || !Array.isArray(result.tasks)) return;
+    const nextStates = {};
+    for (const t of result.tasks) {
+      const id = t.task_id;
+      const status = t.status;
+      if (id) nextStates[id] = status;
+      const prev = _lastTaskStates[id];
+      // 检测从 running 转为完成态的任务并发送通知
+      if (prev === "running" && (status === "completed" || status === "failed")) {
+        const filename = t.filename || t.url || "下载任务";
+        if (status === "completed") {
+          notify("下载完成", `${filename} 已下载完成`, "success");
+        } else {
+          notify("下载失败", `${filename} 下载失败`, "error");
+        }
+      }
+    }
+    _lastTaskStates = nextStates;
+  } catch (e) {
+    // 轮询失败不影响主流程
+    console.debug("pollCompletedTasks failed", e);
   }
 }
 
@@ -226,6 +275,8 @@ async function checkConnection() {
         serverInfo: serverInfo,
       });
       updateBadge();
+      // 轮询下载完成状态（仅当用户开启 notify_on_complete 时实际请求）
+      pollCompletedTasks();
       return;
     }
     throw new Error("unexpected response");
@@ -428,7 +479,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // via the storage.onChanged listener above).
   if (msg && msg.type === "set-auth-token") {
     authToken = msg.token || "";
-    chrome.storage.local.set({ authToken: msg.token || "" });
+    // Bearer token 改用 chrome.storage.session 存储，避免敏感令牌持久化
+    chrome.storage.session.set({ authToken: msg.token || "" });
     // Also push the token to the server's config so it persists across restarts
     sendAuthTokenToServer(authToken).then((r) => sendResponse(r));
     return true;
@@ -886,13 +938,15 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
       if (whitelistLines.length > 0) {
         let allowed = false;
         for (const pattern of whitelistLines) {
-          try {
-            if (new RegExp(pattern, 'i').test(url)) {
-              allowed = true;
-              break;
-            }
-          } catch (e) {
-            console.warn(`Invalid regex in whitelist: ${pattern}`);
+          // 使用 safeRegex 校验，避免 ReDoS（正则拒绝服务）风险
+          const regex = safeRegex(pattern);
+          if (!regex) {
+            console.warn(`无效或存在安全风险的正则（已跳过）: ${pattern}`);
+            continue;
+          }
+          if (regex.test(url)) {
+            allowed = true;
+            break;
           }
         }
         if (!allowed) {
@@ -909,14 +963,15 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
         .map((l) => l.trim())
         .filter((l) => l);
       for (const pattern of blacklistLines) {
-        try {
-          const regex = new RegExp(pattern, 'i');
-          if (regex.test(url)) {
-            console.log(`Skipping download: URL matches blacklist pattern: ${pattern}`);
-            return;
-          }
-        } catch (e) {
-          console.warn(`Invalid regex pattern in blacklist: ${pattern}`);
+        // 使用 safeRegex 校验，避免 ReDoS（正则拒绝服务）风险
+        const regex = safeRegex(pattern);
+        if (!regex) {
+          console.warn(`无效或存在安全风险的正则（已跳过）: ${pattern}`);
+          continue;
+        }
+        if (regex.test(url)) {
+          console.log(`Skipping download: URL matches blacklist pattern: ${pattern}`);
+          return;
         }
       }
     }
@@ -1027,17 +1082,52 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
 // --- Lightweight in-extension history (also server side records) ---
 // Serialize get-modify-set operations to avoid losing concurrent entries.
 let _historyQueue = Promise.resolve();
+// 待处理的历史记录写入任务计数；超过上限时丢弃新任务，防止队列无限增长导致内存溢出
+const MAX_HISTORY_QUEUE = 100;
+let _historyQueueSize = 0;
 function recordHistory(entry) {
+  // 队列长度上限保护：超出时直接丢弃，避免内存占用持续增长
+  if (_historyQueueSize >= MAX_HISTORY_QUEUE) {
+    console.warn("recordHistory 队列已满，丢弃该条记录");
+    return Promise.resolve();
+  }
+  _historyQueueSize++;
   _historyQueue = _historyQueue.then(async () => {
     const data = await chrome.storage.local.get(["recentDownloads"]);
     const history = data.recentDownloads || [];
     history.unshift(entry);
-    while (history.length > 50) history.pop();
+    // 历史记录上限，避免 storage 无限增长。可配置：如需保留更多记录可调大此值。
+    while (history.length > 200) history.pop();
     await chrome.storage.local.set({ recentDownloads: history });
   }).catch((e) => {
     console.warn("recordHistory failed", e);
+  }).finally(() => {
+    _historyQueueSize--;
   });
   return _historyQueue;
+}
+
+// 安全正则表达式校验：检测潜在的 ReDoS（正则拒绝服务）风险。
+// 检查嵌套量词、重叠量词等可能导致指数级回溯的模式，限制正则长度与复杂度。
+// 返回编译后的 RegExp；若模式存在风险或语法错误则返回 null。
+function safeRegex(pattern) {
+  if (typeof pattern !== "string" || !pattern) return null;
+  // 限制正则长度，避免过长输入造成解析负担
+  if (pattern.length > 200) return null;
+  // 检测嵌套量词（如 (a+)+, (a*)* ），这类模式易引发灾难性回溯
+  if (/\([^()]*[+*?][^()]*\)\s*[+*?{]/.test(pattern)) {
+    return null;
+  }
+  // 检测重叠量词（连续量词，如 a++ a** a*+ a{2,3}? 等）
+  if (/[+*?]\s*[+*?{]/.test(pattern)) {
+    return null;
+  }
+  // 尝试编译正则，语法错误则判定为不安全
+  try {
+    return new RegExp(pattern, "i");
+  } catch (e) {
+    return null;
+  }
 }
 
 function extractFilenameFromUrl(url) {
