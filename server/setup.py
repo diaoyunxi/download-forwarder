@@ -75,9 +75,13 @@ def _setup_windows_auto_start():
         winreg.CloseKey(key)
         print('Windows 开机自启已添加（注册表）。')
     except ImportError:
-        # 回退：使用 schtasks 创建计划任务
-        cmd = f'schtasks /create /tn "{APP_NAME}" /tr "\"{SERVER_EXE}\" \"{SERVER_FILE}\"" /sc onlogon /rl limited'
-        subprocess.run(cmd, shell=True, check=False)
+        # 回退：使用 schtasks 创建计划任务（使用列表参数，避免 shell=True 命令注入）
+        cmd = [
+            "schtasks", "/create", "/tn", APP_NAME,
+            "/tr", f'"{SERVER_EXE}" "{SERVER_FILE}"',
+            "/sc", "onlogon", "/rl", "limited"
+        ]
+        subprocess.run(cmd, shell=False, check=False)
         print('Windows 计划任务已创建。')
     except Exception as e:
         print(f'设置 Windows 开机自启失败: {e}')
@@ -90,7 +94,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart={SERVER_EXE} {SERVER_FILE}
+ExecStart="{SERVER_EXE}" "{SERVER_FILE}"
 Restart=on-failure
 RestartSec=5
 
@@ -114,7 +118,8 @@ WantedBy=default.target
     except Exception as e:
         # 回退：添加到 crontab
         print(f'systemd 配置失败，回退到 crontab: {e}')
-        cron_entry = f'@reboot {SERVER_EXE} {SERVER_FILE}\n'
+        # v1.9.1: 路径加引号，防止含空格路径导致解析错误
+        cron_entry = f'@reboot "{SERVER_EXE}" "{SERVER_FILE}"\n'
         result = subprocess.run(['crontab', '-l'], capture_output=True, text=True)
         current_cron = result.stdout if result.returncode == 0 else ''
         if SERVER_FILE not in current_cron:
@@ -125,6 +130,13 @@ WantedBy=default.target
             print('已添加到 crontab 实现开机自启。')
         else:
             print('已存在于 crontab 中。')
+
+def _xml_escape(s):
+    """对字符串中的 XML 特殊字符进行实体转义，防止破坏 plist 结构。"""
+    if not s:
+        return s
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
 
 def _setup_macos_auto_start():
     """v1.9.0: 在 macOS 上通过 LaunchAgent 实现开机自启。
@@ -143,6 +155,7 @@ def _setup_macos_auto_start():
     # - StandardOutPath / StandardErrorPath: 重定向输出到日志文件
     log_dir = os.path.expanduser('~/.download_forwarder')
     os.makedirs(log_dir, exist_ok=True)
+    # v1.9.1: 对路径中的 XML 特殊字符进行转义，避免破坏 plist 结构
     plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -151,17 +164,17 @@ def _setup_macos_auto_start():
     <string>{label}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{SERVER_EXE}</string>
-        <string>{SERVER_FILE}</string>
+        <string>{_xml_escape(SERVER_EXE)}</string>
+        <string>{_xml_escape(SERVER_FILE)}</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>{os.path.join(log_dir, 'launchd.out.log')}</string>
+    <string>{_xml_escape(os.path.join(log_dir, 'launchd.out.log'))}</string>
     <key>StandardErrorPath</key>
-    <string>{os.path.join(log_dir, 'launchd.err.log')}</string>
+    <string>{_xml_escape(os.path.join(log_dir, 'launchd.err.log'))}</string>
 </dict>
 </plist>
 """
@@ -187,7 +200,8 @@ def _setup_macos_auto_start():
         print(f'设置 macOS LaunchAgent 失败: {e}')
         # 回退：添加到 crontab
         print('回退到 crontab 方案...')
-        cron_entry = f'@reboot {SERVER_EXE} {SERVER_FILE}\n'
+        # v1.9.1: 路径加引号，防止含空格路径导致解析错误
+        cron_entry = f'@reboot "{SERVER_EXE}" "{SERVER_FILE}"\n'
         result = subprocess.run(['crontab', '-l'], capture_output=True, text=True)
         current_cron = result.stdout if result.returncode == 0 else ''
         if SERVER_FILE not in current_cron:

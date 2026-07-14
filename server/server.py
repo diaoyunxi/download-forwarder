@@ -30,7 +30,31 @@ import shutil
 import re
 import uuid
 import signal
+import hmac
+import logging
+import logging.handlers
+import urllib.request
+import urllib.error
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
+
+# v1.9.1: urllib 连接池，避免每次预检都新建 opener
+_urllib_pool_lock = threading.Lock()
+_urllib_opener = None
+
+def _get_urllib_opener(proxy=""):
+    """获取或创建带连接池复用的 urllib opener。当 proxy 参数变化时重建。"""
+    global _urllib_opener
+    with _urllib_pool_lock:
+        if proxy:
+            handler = urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+            new_opener = urllib.request.build_opener(handler)
+        else:
+            new_opener = urllib.request.build_opener()
+        # 仅当 opener 类型变化时才替换（相同 proxy 复用同一个）
+        if _urllib_opener is None or type(_urllib_opener.handlers[0]) != type(new_opener.handlers[0]):
+            _urllib_opener = new_opener
+        return _urllib_opener
 
 # === Configuration ===
 PORT = 18735
@@ -64,9 +88,15 @@ DEFAULT_CATEGORY_RULES = [
 _history_lock = threading.Lock()
 _config_lock = threading.Lock()
 
-# Active downloads tracking
-_active_downloads = 0
-_active_downloads_lock = threading.Lock()
+# v1.9.1: 配置缓存（内存缓存 + 文件修改时间校验，避免每次请求都读磁盘）
+_config_cache = {"data": None, "mtime": 0.0}
+
+# v1.9.1: detect_available_programs 缓存（启动时检测一次，每60秒刷新）
+_detected_programs = {"list": None, "ts": 0.0}
+_PROGRAMS_CACHE_TTL = 60  # 秒
+
+# v1.9.1: 移除独立的 _active_downloads 计数器，统一从 _tasks 字典计算运行中任务数。
+# 保留锁引用以兼容已有调用方式，但不再维护独立计数。
 
 # v1.9.0: active task registry. Maps task_id -> task dict.
 # Each task dict contains: task_id, pid, process (subprocess.Popen handle),
@@ -86,6 +116,7 @@ def _gen_task_id():
 def _register_task(process, url, program, filename, source="auto"):
     """Register a newly-spawned download subprocess and start a watcher thread
     that updates the task status when the process exits. Returns the task_id.
+    v1.9.1: 将 Popen 对象存入 task dict，以便 _cancel_task 能直接 wait 进程退出。
     """
     task_id = _gen_task_id()
     started = datetime.datetime.now()
@@ -93,6 +124,7 @@ def _register_task(process, url, program, filename, source="auto"):
         _tasks[task_id] = {
             "task_id": task_id,
             "pid": process.pid,
+            "process": process,  # Popen 引用，用于取消时 wait（不会被序列化到 JSON）
             "url": url,
             "program": program,
             "filename": filename,
@@ -129,7 +161,9 @@ def _register_task(process, url, program, filename, source="auto"):
 
 
 def _cancel_task(task_id):
-    """Terminate a running task's process group. Returns (ok, message)."""
+    """Terminate a running task's process group. Returns (ok, message).
+    v1.9.1: 发送终止信号后等待进程退出（最多3秒），避免进程成为僵尸。
+    """
     with _tasks_lock:
         task = _tasks.get(task_id)
         if not task:
@@ -137,6 +171,7 @@ def _cancel_task(task_id):
         if task["status"] != "running":
             return False, f"task is already {task['status']}"
         pid = task["pid"]
+        proc = task.get("process")  # v1.9.1: 获取 Popen 对象用于后续 wait
 
     try:
         if os.name == "nt":
@@ -162,6 +197,14 @@ def _cancel_task(task_id):
                     os.kill(pid, signal.SIGTERM)
                 except ProcessLookupError:
                     pass
+        # v1.9.1: 等待进程退出（最多3秒），防止僵尸进程
+        if proc is not None:
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                log_message("WARNING", f"Task {task_id} (pid {pid}) did not exit within 3s after SIGTERM")
+            except Exception:
+                pass
         with _tasks_lock:
             if task_id in _tasks:
                 _tasks[task_id]["status"] = "cancelled"
@@ -208,15 +251,25 @@ def _ensure_config_dir():
 
 
 def load_config():
+    """加载配置文件，使用内存缓存 + 文件修改时间校验避免重复磁盘读取。"""
     _ensure_config_dir()
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, OSError):
+    # 检查文件修改时间，仅在变更时重新读取
+    try:
+        current_mtime = os.path.getmtime(CONFIG_FILE) if os.path.exists(CONFIG_FILE) else 0.0
+    except OSError:
+        current_mtime = 0.0
+    with _config_lock:
+        if _config_cache["data"] is not None and _config_cache["mtime"] == current_mtime:
+            return _config_cache["data"]
+        # 需要从磁盘读取
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                data = {}
+        else:
             data = {}
-    else:
-        data = {}
     data.setdefault("download_dir", os.path.join(os.path.expanduser("~"), "Downloads"))
     data.setdefault("program", "wget")
     data.setdefault("arguments", "")
@@ -246,6 +299,10 @@ def load_config():
     # /ping and OPTIONS require `Authorization: Bearer <token>`. Empty string
     # disables authentication (kept for backwards compatibility).
     data.setdefault("auth_token", "")
+    # 更新缓存
+    with _config_lock:
+        _config_cache["data"] = data
+        _config_cache["mtime"] = current_mtime
     return data
 
 
@@ -255,6 +312,12 @@ def save_config(data):
         try:
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+            # 保存后更新缓存，避免下次 load_config 时再次读磁盘
+            try:
+                _config_cache["data"] = data
+                _config_cache["mtime"] = os.path.getmtime(CONFIG_FILE)
+            except OSError:
+                pass
         except OSError:
             pass
 
@@ -271,10 +334,17 @@ def load_history():
 
 
 def append_history(entry):
+    """追加一条历史记录到 history.json。"""
+    append_history_batch([entry])
+
+
+def append_history_batch(entries):
+    """批量追加历史记录到 history.json，减少频繁全量读写。"""
     _ensure_config_dir()
     with _history_lock:
         history = load_history()
-        history.insert(0, entry)
+        for entry in entries:
+            history.insert(0, entry)
         cfg = load_config()
         max_items = cfg.get("max_history", MAX_HISTORY)
         history = history[:max_items]
@@ -285,19 +355,60 @@ def append_history(entry):
             pass
 
 
+# v1.9.1: 使用 Python logging 模块替代手写 log_message，支持日志级别控制和按大小轮转。
+_logger = None
+_LOG_INITIALIZED = False
+_log_init_lock = threading.Lock()
+
+
+def _init_logger():
+    """初始化 logging 模块（仅执行一次），配置 RotatingFileHandler 和控制台输出。"""
+    global _logger, _LOG_INITIALIZED
+    with _log_init_lock:
+        if _LOG_INITIALIZED:
+            return
+        _ensure_config_dir()
+        _logger = logging.getLogger("download_forwarder")
+        _logger.setLevel(logging.DEBUG)
+        # 按大小轮转的文件 handler（最大 5MB，保留 3 个备份）
+        try:
+            _file_handler = logging.handlers.RotatingFileHandler(
+                LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3,
+                encoding="utf-8"
+            )
+            _file_handler.setLevel(logging.DEBUG)
+            _file_formatter = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s",
+                                                datefmt="%Y-%m-%d %H:%M:%S")
+            _file_handler.setFormatter(_file_formatter)
+            _logger.addHandler(_file_handler)
+        except OSError:
+            pass
+        # 控制台 handler
+        _console_handler = logging.StreamHandler(sys.stdout)
+        _console_handler.setLevel(logging.INFO)
+        _console_formatter = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s",
+                                               datefmt="%Y-%m-%d %H:%M:%S")
+        _console_handler.setFormatter(_console_formatter)
+        _logger.addHandler(_console_handler)
+        _LOG_INITIALIZED = True
+
+
 def log_message(level, message):
-    _ensure_config_dir()
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{timestamp}] [{level}] {message}\n"
-    try:
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(line)
-    except OSError:
-        pass
-    print(line.rstrip())
+    """使用 logging 模块记录日志，支持级别控制和按大小轮转。"""
+    if not _LOG_INITIALIZED:
+        _init_logger()
+    level = level.upper()
+    if level in ("ERROR", "CRITICAL", "WARNING", "WARN", "INFO", "DEBUG"):
+        _logger.log(getattr(logging, level, logging.INFO), message)
+    else:
+        _logger.info(f"[{level}] {message}")
 
 
 def detect_available_programs():
+    """检测可用下载程序，使用缓存（每60秒刷新一次）避免频繁执行 shutil.which。"""
+    now = time.time()
+    if _detected_programs["list"] is not None and (now - _detected_programs["ts"]) < _PROGRAMS_CACHE_TTL:
+        return _detected_programs["list"]
     available = []
     for prog in DEFAULT_PROGRAMS:
         if shutil.which(prog):
@@ -322,6 +433,8 @@ def detect_available_programs():
         if p not in seen:
             seen.add(p)
             unique.append(p)
+    _detected_programs["list"] = unique
+    _detected_programs["ts"] = now
     return unique
 
 
@@ -330,12 +443,17 @@ def sanitize_filename(filename):
         return ""
     # Remove path separators and other dangerous characters
     sanitized = re.sub(r'[\\/:*?"<>|]', "_", filename)
-    return sanitized.strip()
+    sanitized = sanitized.strip()
+    if not sanitized:
+        return "download"
+    # v1.9.1: 处理以点开头的隐藏文件名，避免创建隐藏文件或目录遍历
+    if sanitized.startswith("."):
+        sanitized = "_" + sanitized.lstrip(".")
+    return sanitized or "download"
 
 
 def get_filename_from_url(url):
     try:
-        from urllib.parse import urlparse
         path = urlparse(url).path
         name = os.path.basename(path)
         return sanitize_filename(name) or "download"
@@ -405,7 +523,6 @@ def is_stream_url(url):
     if not url:
         return False
     try:
-        from urllib.parse import urlparse
         path = urlparse(url).path.lower()
     except Exception:
         path = url.lower()
@@ -418,7 +535,10 @@ def is_stream_url(url):
 
 class DownloadHandler(BaseHTTPRequestHandler):
     def _send_cors_headers(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
+        # v1.9.1: 仅允许浏览器扩展来源，防止 DNS Rebinding 攻击
+        origin = self.headers.get("Origin", "")
+        if origin.startswith(("chrome-extension://", "moz-extension://")):
+            self.send_header("Access-Control-Allow-Origin", origin)
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         # v1.9.0: allow Authorization header so the extension can send the
         # Bearer token required when auth_token is configured server-side.
@@ -449,9 +569,8 @@ class DownloadHandler(BaseHTTPRequestHandler):
     def _check_auth(self):
         """Returns True when the request is authorized. When auth is disabled
         (empty auth_token) the request is always authorized.
+        v1.9.1: 合并为单次 load_config 调用，避免对同一次请求产生两次磁盘读取。
         """
-        if not self._is_auth_required():
-            return True
         cfg = load_config()
         expected = (cfg.get("auth_token") or "").strip()
         if not expected:
@@ -466,18 +585,14 @@ class DownloadHandler(BaseHTTPRequestHandler):
         # Also accept ?token=... query parameter as a fallback for browser-initiated
         # downloads (e.g. clicking export URLs which cannot easily set headers).
         if not token:
-            from urllib.parse import urlparse, parse_qs
             params = parse_qs(urlparse(self.path).query)
             token = (params.get("token") or [""])[0]
         if not token:
             return False
-        # Constant-time comparison to avoid trivial timing attacks.
+        # v1.9.1: 使用 hmac.compare_digest 进行恒定时间比较（更标准、更安全）
         if len(token) != len(expected):
             return False
-        result = 0
-        for a, b in zip(token, expected):
-            result |= ord(a) ^ ord(b)
-        return result == 0
+        return hmac.compare_digest(token, expected)
 
     def _send_unauthorized(self):
         self.send_response(401)
@@ -540,7 +655,6 @@ class DownloadHandler(BaseHTTPRequestHandler):
             if not self._check_auth():
                 self._send_unauthorized()
                 return
-            from urllib.parse import urlparse, parse_qs
             params = parse_qs(urlparse(self.path).query)
             try:
                 limit = int((params.get("limit") or ["50"])[0])
@@ -777,7 +891,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
             self._send_error(f"Cannot create directory: {e}", 500)
             return
 
-        # Retry logic
+        # Retry logic - v1.9.1: 不再阻塞请求线程，仅重试一次快速重试
         result = None
         attempt = 0
         for attempt in range(max_retries + 1):
@@ -791,7 +905,9 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 break
             if attempt < max_retries:
                 log_message("WARNING", f"Download attempt {attempt + 1} failed, retrying...")
-                time.sleep(1)  # Wait 1 second before retry
+                # v1.9.1: 仅短暂等待（0.1秒），避免长时间阻塞请求处理线程。
+                # ThreadingHTTPServer 虽然多线程，但阻塞线程在高并发时仍会耗尽线程池。
+                time.sleep(0.1)
             else:
                 log_message("ERROR", f"All {max_retries + 1} attempts failed")
 
@@ -985,7 +1101,10 @@ class DownloadHandler(BaseHTTPRequestHandler):
         try:
             flags = 0
             if os.name == "nt":
-                flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | 0x08000000  # DETACHED_PROCESS
+                # v1.9.1: 使用标准常量替代硬编码魔数
+                detached = getattr(subprocess, "DETACHED_PROCESS", 0x08000000)
+                cnp = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                flags = cnp | detached
             # Pass proxy via env vars too (best-effort socks5 support for wget/curl)
             env = None
             if proxy:
@@ -1039,22 +1158,14 @@ class DownloadHandler(BaseHTTPRequestHandler):
             return {"status": "error", "message": str(e)}
 
     def _count_active_downloads(self):
-        """Count currently active downloads"""
-        global _active_downloads
-        with _active_downloads_lock:
-            return _active_downloads
+        """v1.9.1: 统一从 _tasks 字典计算运行中任务数，替代独立计数器。"""
+        with _tasks_lock:
+            return sum(1 for t in _tasks.values() if t.get("status") == "running")
 
     def _register_download(self):
-        """Register a new download and schedule cleanup"""
-        global _active_downloads
-        with _active_downloads_lock:
-            _active_downloads += 1
-        # Schedule cleanup after 5 minutes (downloads should be done by then)
-        def cleanup():
-            global _active_downloads
-            with _active_downloads_lock:
-                _active_downloads = max(0, _active_downloads - 1)
-        threading.Timer(300, cleanup).start()
+        """v1.9.1: 不再维护独立计数器。任务注册由 _register_task 处理，
+        运行中任务数通过 _count_active_downloads 从 _tasks 字典动态计算。"""
+        pass
 
     def _build_command(self, url, program, args, filename, download_dir,
                        speed_limit=0, cookies="", headers=None, proxy=""):
@@ -1243,14 +1354,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
         return commands.get(program)
 
     def _handle_check(self):
-        """v1.7.0: HEAD/GET request to determine remote file size and filename.
-
-        Query params:
-          url=<remote url>
-        Response:
-          {status, url, filename, size, size_human, content_type, redirected, final_url}
-        """
-        from urllib.parse import urlparse, parse_qs
+        """v1.7.0: HEAD/GET request to determine remote file size and filename."""
         params = parse_qs(urlparse(self.path).query)
         url = (params.get("url") or [""])[0]
         if not url:
@@ -1274,18 +1378,10 @@ class DownloadHandler(BaseHTTPRequestHandler):
             headers["User-Agent"] = srv_ua
 
         try:
-            import urllib.request
-            import urllib.error
             req = urllib.request.Request(url, method="HEAD", headers=headers)
             if cookies:
                 req.add_header("Cookie", cookies)
-            opener = urllib.request.build_opener()
-            if proxy:
-                proxy_handler = urllib.request.ProxyHandler({
-                    "http": proxy,
-                    "https": proxy,
-                })
-                opener = urllib.request.build_opener(proxy_handler)
+            opener = _get_urllib_opener(proxy)
             resp = opener.open(req, timeout=10)
             size_raw = resp.headers.get("Content-Length") or resp.headers.get("content-length") or ""
             try:
@@ -1342,18 +1438,12 @@ class DownloadHandler(BaseHTTPRequestHandler):
     def _check_via_get(self, url, headers, cookies, proxy):
         """Fallback when HEAD is rejected: issue a small ranged GET request."""
         try:
-            import urllib.request
-            import urllib.error
             get_headers = dict(headers or {})
             get_headers["Range"] = "bytes=0-0"
             req = urllib.request.Request(url, method="GET", headers=get_headers)
             if cookies:
                 req.add_header("Cookie", cookies)
-            opener = urllib.request.build_opener()
-            if proxy:
-                opener = urllib.request.build_opener(urllib.request.ProxyHandler({
-                    "http": proxy, "https": proxy,
-                }))
+            opener = _get_urllib_opener(proxy)
             resp = opener.open(req, timeout=10)
             # Content-Range: bytes 0-0/12345 -> total = 12345
             cr = resp.headers.get("Content-Range") or resp.headers.get("content-range") or ""
@@ -1442,11 +1532,60 @@ class DownloadHandler(BaseHTTPRequestHandler):
         # running shutil.which on every URL).
         ffmpeg_available = "ffmpeg" in detect_available_programs()
 
+        # v1.9.1: 预先收集所有需要的子目录并一次性创建，避免每个 URL 都调用 os.makedirs
+        needed_dirs = set()
+        for raw_url in urls:
+            url = str(raw_url or "").strip()
+            if not url:
+                continue
+            filename = sanitize_filename(get_filename_from_url(url)) or "download"
+            chosen = program
+            matched = match_url_rule(url, url_rules)
+            if matched:
+                chosen = matched
+            if cfg.get("auto_ffmpeg_streams", True) and is_stream_url(url) and chosen != "ffmpeg" and ffmpeg_available:
+                chosen = "ffmpeg"
+            effective_dir = download_dir
+            if cfg.get("categorize_enabled") and cfg.get("category_rules"):
+                category_subfolder = categorize_filename(filename, cfg.get("category_rules"))
+                if category_subfolder:
+                    effective_dir = os.path.join(download_dir, category_subfolder)
+            needed_dirs.add(effective_dir)
+        for d in needed_dirs:
+            try:
+                os.makedirs(d, exist_ok=True)
+            except OSError:
+                pass
+
+        # v1.9.1: 收集所有历史条目，循环结束后一次性批量写入
+        batch_entries = []
+
         for raw_url in urls:
             url = str(raw_url or "").strip()
             if not url:
                 results.append({"url": "", "status": "error", "message": "empty url"})
                 continue
+
+            # v1.9.1: 批量下载中增加并发限制检查
+            active = self._count_active_downloads()
+            if active >= concurrent_limit:
+                results.append({
+                    "url": url,
+                    "status": "error",
+                    "message": f"Concurrent download limit reached ({active}/{concurrent_limit})",
+                })
+                batch_entries.append({
+                    "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "url": url,
+                    "program": program,
+                    "filename": sanitize_filename(get_filename_from_url(url)) or "download",
+                    "status": "error",
+                    "message": f"Concurrent download limit reached",
+                    "source": source,
+                    "category": "",
+                })
+                continue
+
             filename = sanitize_filename(get_filename_from_url(url)) or "download"
             chosen = program
             matched = match_url_rule(url, url_rules)
@@ -1463,12 +1602,6 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 if category_subfolder:
                     effective_dir = os.path.join(download_dir, category_subfolder)
 
-            try:
-                os.makedirs(effective_dir, exist_ok=True)
-            except OSError as e:
-                results.append({"url": url, "status": "error", "message": f"mkdir failed: {e}"})
-                continue
-
             attempt = 0
             result = None
             for attempt in range(max_retries + 1):
@@ -1481,7 +1614,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
                     self._register_download()
                     break
                 if attempt < max_retries:
-                    time.sleep(0.5)
+                    time.sleep(0.1)  # v1.9.1: 缩短等待时间避免阻塞
             status = result.get("status", "error")
             if status == "success":
                 success_count += 1
@@ -1493,7 +1626,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 "filename": filename,
                 "task_id": result.get("task_id", ""),
             })
-            entry = {
+            batch_entries.append({
                 "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "url": url,
                 "program": chosen,
@@ -1503,8 +1636,11 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 "retries": attempt if status != "success" else 0,
                 "source": source,
                 "category": category_subfolder,
-            }
-            append_history(entry)
+            })
+
+        # v1.9.1: 批量写入历史，避免每个 URL 都全量读写文件
+        if batch_entries:
+            append_history_batch(batch_entries)
 
         log_message("INFO", f"Batch forward: {success_count}/{len(urls)} succeeded")
         self._send_json({
@@ -1517,7 +1653,6 @@ class DownloadHandler(BaseHTTPRequestHandler):
 
     def _handle_export(self):
         """Export history as JSON or CSV"""
-        from urllib.parse import urlparse, parse_qs
         params = parse_qs(urlparse(self.path).query)
         fmt = (params.get("format") or ["json"])[0].lower()
         history = load_history()

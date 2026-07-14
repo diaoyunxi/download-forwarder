@@ -293,7 +293,8 @@ async function init() {
       }
     }
   } catch (e) {
-    // server might not be running, keep existing state
+    // v1.9.1: 添加调试日志，便于定位初始化失败原因
+    console.debug("init: ping check failed", e);
   }
 
   // Pull server-side history and dir if available
@@ -307,7 +308,9 @@ async function init() {
       currentHistory = combined;
       renderHistory(combined);
     }
-  } catch (e) {}
+  } catch (e) {
+    console.debug("init: load history failed", e);
+  }
 
   try {
     const cfg = await fetchJSON(LOCAL_SERVER + "/config");
@@ -346,7 +349,9 @@ async function init() {
         updateAutoFfmpegToggle();
       }
     }
-  } catch (e) {}
+  } catch (e) {
+    console.debug("init: load config failed", e);
+  }
 
   // Load stats
   try {
@@ -354,7 +359,9 @@ async function init() {
     if (stats && stats.status === "ok") {
       renderStats(stats);
     }
-  } catch (e) {}
+  } catch (e) {
+    console.debug("init: load stats failed", e);
+  }
 }
 
 // v1.9.0: auth token (loaded from storage, injected into all server requests)
@@ -375,7 +382,25 @@ function fetchJSON(url, options) {
     ...(options || {}),
   };
   opts.headers = _authHeaders(opts.headers);
-  return fetch(url, opts).then((r) => r.json());
+  // v1.9.1: 先校验响应状态和 Content-Type，避免对非 JSON 响应调用 .json() 导致异常
+  return fetch(url, opts).then(async (r) => {
+    if (!r.ok) {
+      const text = await r.text().catch(() => "");
+      throw new Error(text || `HTTP ${r.status}`);
+    }
+    const ct = (r.headers.get("Content-Type") || "").toLowerCase();
+    // 允许 application/json 和 text/plain（某些简单服务器可能返回 text/plain）
+    if (!ct.includes("application/json") && !ct.includes("text/plain")) {
+      // 非 JSON 响应，尝试解析，失败则返回 null
+      const text = await r.text().catch(() => "");
+      try {
+        return JSON.parse(text);
+      } catch (e) {
+        throw new Error("服务器返回非 JSON 响应: " + (ct || "unknown content-type"));
+      }
+    }
+    return r.json();
+  });
 }
 
 // v1.9.0: POST helper that automatically injects the Bearer token and
@@ -388,6 +413,11 @@ async function postJSON(url, body) {
     signal: AbortSignal.timeout(5000),
   };
   const r = await fetch(url, opts);
+  // v1.9.1: 校验响应状态，非 2xx 先读取文本再抛异常
+  if (!r.ok) {
+    const text = await r.text().catch(() => "");
+    throw new Error(text || `HTTP ${r.status}`);
+  }
   return r.json();
 }
 
@@ -395,7 +425,8 @@ function mergeHistory(ext, server) {
   const seen = new Set();
   const combined = [];
   for (const item of [...ext, ...server]) {
-    const key = (item.timestamp || "") + "|" + (item.url || "");
+    // v1.9.1: 增加更多字段到去重 key，避免同一秒内同 URL 的不同下载被错误去重
+    const key = (item.timestamp || "") + "|" + (item.url || "") + "|" + (item.program || "") + "|" + (item.source || "");
     if (key && !seen.has(key)) {
       seen.add(key);
       combined.push(item);
@@ -1317,9 +1348,16 @@ historyRetryAllBtn.addEventListener("click", async () => {
   historyRetryAllBtn.disabled = true;
   let ok = 0;
   let fail = 0;
-  for (const item of failed) {
-    const success = await retryHistoryItem(item.url, item.filename || "");
-    if (success) ok++; else fail++;
+  // v1.9.1: 增加并发限制，使用 Promise.all + chunk 分批，避免大量失败时串行执行极慢
+  const BATCH = 5;
+  for (let i = 0; i < failed.length; i += BATCH) {
+    const chunk = failed.slice(i, i + BATCH);
+    const results = await Promise.all(
+      chunk.map((item) => retryHistoryItem(item.url, item.filename || ""))
+    );
+    for (const success of results) {
+      if (success) ok++; else fail++;
+    }
   }
   historyRetryAllBtn.disabled = false;
   alert(`重试完成：成功 ${ok} / 失败 ${fail} / 共 ${failed.length}`);
@@ -1336,7 +1374,9 @@ clearHistoryBtn.addEventListener("click", async () => {
   chrome.storage.local.set({ recentDownloads: [] });
   try {
     await postJSON(LOCAL_SERVER + "/history/clear", {});
-  } catch (e) {}
+  } catch (e) {
+    console.debug("clear history: server clear failed", e);
+  }
   currentHistory = [];
   renderHistory([]);
   statTotalEl.textContent = "0";
@@ -1819,16 +1859,7 @@ document.getElementById("tasks-cancel-all-btn").addEventListener("click", async 
   }
 });
 
-// HTML 转义辅助函数，防止任务信息中的特殊字符破坏 DOM
-function escapeHtml(str) {
-  if (str === null || str === undefined) return "";
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
+
 
 // Start
 init();

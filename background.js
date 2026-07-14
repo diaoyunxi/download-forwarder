@@ -167,8 +167,10 @@ async function fetchJSON(url, options) {
     ...opts,
     signal: AbortSignal.timeout(6000),
   });
-  if (!response.ok && response.status !== 200) {
-    // Allow non-2xx only when body is parseable
+  // v1.9.1: 修复条件判断冗余，非 2xx 响应先读取文本再抛异常，避免对 HTML 错误页调用 .json()
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(text || `HTTP ${response.status}`);
   }
   return await response.json();
 }
@@ -625,10 +627,25 @@ async function forwardBatch(urls) {
   }
 
   // v1.8.0: consolidated duplicate warning for batch forwards
+  // v1.9.1: 先读取一次历史记录，再在内存中批量比对，避免每个 URL 串行读取 storage
   if (warnDuplicates) {
     let dupCount = 0;
-    for (const u of cleaned) {
-      if (await findRecentDuplicate(u)) dupCount++;
+    try {
+      const histData = await chrome.storage.local.get(["recentDownloads"]);
+      const hist = histData.recentDownloads || [];
+      const windowMs = Math.max(0, duplicateWarnMinutes) * 60 * 1000;
+      const cutoff = windowMs > 0 ? Date.now() - windowMs : 0;
+      for (const u of cleaned) {
+        if (cutoff > 0 && hist.some(item => {
+          if (!item || item.url !== u) return false;
+          const ts = item.timestamp ? new Date(item.timestamp).getTime() : 0;
+          return ts && ts >= cutoff;
+        })) {
+          dupCount++;
+        }
+      }
+    } catch (e) {
+      /* ignore */
     }
     if (dupCount > 0) {
       notify(
@@ -966,7 +983,10 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
       // Cancel the browser-managed download
       try {
         chrome.downloads.cancel(downloadItem.id, () => {
-          /* ignore errors */
+          // v1.9.1: 检查 lastError 避免静默忽略错误
+          if (chrome.runtime.lastError) {
+            console.warn("cancel download failed:", chrome.runtime.lastError.message);
+          }
         });
       } catch (e) {
         console.warn("cancel failed", e);
