@@ -211,8 +211,8 @@ def _cancel_task(task_id):
                 proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 log_message("WARNING", f"Task {task_id} (pid {pid}) did not exit within 3s after SIGTERM")
-            except Exception:
-                pass
+            except Exception as e:
+                log_message("ERROR", f"Task cleanup error: {e}")
         with _tasks_lock:
             if task_id in _tasks:
                 _tasks[task_id]["status"] = "cancelled"
@@ -637,8 +637,6 @@ class DownloadHandler(BaseHTTPRequestHandler):
         if not token:
             return False
         # v1.9.1: 使用 hmac.compare_digest 进行恒定时间比较（更标准、更安全）
-        if len(token) != len(expected):
-            return False
         return hmac.compare_digest(token, expected)
 
     def _send_unauthorized(self):
@@ -1009,7 +1007,13 @@ class DownloadHandler(BaseHTTPRequestHandler):
     def _handle_config_update(self, data):
         cfg = load_config()
         if "download_dir" in data and data["download_dir"]:
-            cfg["download_dir"] = data["download_dir"]
+            proposed_dir = os.path.abspath(data["download_dir"])
+            home_dir = os.path.expanduser("~")
+            # 限制下载目录只能在用户主目录下，防止写入系统目录
+            if proposed_dir.startswith(home_dir) or proposed_dir.startswith("/tmp"):
+                cfg["download_dir"] = proposed_dir
+            else:
+                log_message("WARNING", f"Rejected download_dir outside home: {proposed_dir}")
         if "program" in data:
             cfg["program"] = data["program"]
         if "arguments" in data:
