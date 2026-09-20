@@ -839,6 +839,16 @@ class DownloadHandler(BaseHTTPRequestHandler):
             self._send_error("Missing URL", 400)
             return
 
+        # SSRF 防护：仅允许 http/https scheme (CWE-918)
+        try:
+            parsed_scheme = urlparse(url).scheme.lower()
+        except Exception:
+            parsed_scheme = ""
+        if parsed_scheme not in ("http", "https", ""):
+            log_message("WARN", f"Download request rejected: disallowed URL scheme '{parsed_scheme}'")
+            self._send_error(f"Disallowed URL scheme: {parsed_scheme}", 400)
+            return
+
         cfg = load_config()
         download_dir = cfg.get("download_dir") or os.path.join(os.path.expanduser("~"), "Downloads")
         max_retries = cfg.get("max_retries", 3)
