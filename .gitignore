@@ -6,3 +6,6 @@
 # Python
 __pycache__/
 *.pyc
+
+# Ruff linter cache
+.ruff_cache/
