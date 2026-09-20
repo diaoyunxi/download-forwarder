@@ -18,25 +18,25 @@ Enhanced with:
 - v1.9.0: aria2c downloader support
 """
 
+import datetime
+import hmac
 import json
+import logging
+import logging.handlers
 import os
 import platform
+import re
+import shutil
+import signal
 import subprocess
 import sys
 import threading
 import time
-import datetime
-import shutil
-import re
-import uuid
-import signal
-import hmac
-import logging
-import logging.handlers
-import urllib.request
 import urllib.error
-from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
+import urllib.request
+import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 
 # v1.9.1: urllib 连接池，避免每次预检都新建 opener
 _urllib_pool_lock = threading.Lock()
