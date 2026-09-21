@@ -1652,7 +1652,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
                     "program": program,
                     "filename": sanitize_filename(get_filename_from_url(url)) or "download",
                     "status": "error",
-                    "message": f"Concurrent download limit reached",
+                    "message": "Concurrent download limit reached",
                     "source": source,
                     "category": "",
                 })
