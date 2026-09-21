@@ -2,7 +2,7 @@
 
 浏览器扩展，捕获下载请求并转发到本地下载管理器（wget / curl / IDM / NDM / Gopeed / ffmpeg / aria2c）。
 
-> 当前版本：**v1.9.0**
+> 当前版本：**v1.10.1**
 
 ## 架构
 
@@ -53,6 +53,13 @@ python server/setup.py
 - 失败自动重试（默认 3 次）
 - 下载历史记录与统计（总计 / 成功 / 失败 / 按程序分类）
 - 导出历史为 JSON / CSV
+
+### v1.10.1
+- **修复**：若干代码质量与导入排序问题
+
+### v1.10.0
+- **改进**：服务端任务管理优化（孤儿进程回收、防止 watcher 线程遗漏导致任务永久 running）
+- **改进**：代码质量与安全性审查修复
 
 ### v1.9.0 新增功能
 - **aria2c 多连接下载**：新增 `aria2c` 作为第 7 个下载器。服务端 `_build_command` 为 aria2c 生成 `aria2c -c -x16 -s16 -k1M --file-allocation=none --console-log-level=error --summary-interval=0 -d <dir> [-o <name>] [--max-download-limit=<speed>k] [--header=Cookie: ...] [--header=Key: Value] [--all-proxy=<proxy>] <url>` 命令，支持 16 路并发连接、断点续传、自动转发 Cookie / 自定义请求头 / 代理。适用于大文件高速下载
@@ -112,6 +119,7 @@ python server/setup.py
 - **标签页 UI**：弹窗内容拆分为「主面板 / 规则 / 历史 / 高级」四个标签页
 
 ### 早期版本
+- v1.10.0：服务端任务管理优化、孤儿进程回收、代码质量改进
 - v1.9.0：aria2c 多连接下载、活动任务追踪与管理、Bearer Token 鉴权、ThreadingHTTPServer 并发、macOS LaunchAgent 自启动
 - v1.8.0：ffmpeg 流媒体下载、流媒体自动路由、历史重试与高级筛选、三态主题（跟随系统）、重复下载提醒
 - v1.7.0：批量下载、文件大小预检、页面链接嗅探、自动分类归档
