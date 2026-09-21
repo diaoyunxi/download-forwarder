@@ -226,12 +226,29 @@ def _cancel_task(task_id):
 
 
 def _prune_tasks():
-    """Remove finished tasks older than TASK_TTL_SECONDS to bound memory use."""
+    """Remove finished tasks older than TASK_TTL_SECONDS to bound memory use.
+
+    Also reaps orphaned "running" tasks whose underlying process has already
+    exited but the watcher thread failed to update the status (e.g. due to
+    thread scheduling races or exceptions in the watcher).
+    """
     cutoff = time.time() - TASK_TTL_SECONDS
     with _tasks_lock:
         stale = []
         for tid, t in _tasks.items():
             if t["status"] == "running":
+                # Reap orphaned processes: if the process has exited but the
+                # watcher thread did not update the status, fix it now.
+                proc = t.get("process")
+                if proc is not None and proc.poll() is not None:
+                    # Process already exited — update status in-place
+                    rc = proc.returncode
+                    t["status"] = "completed" if rc == 0 else "failed"
+                    t["exit_code"] = rc
+                    if not t.get("ended_at"):
+                        t["ended_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        t["ended_ts"] = time.time()
+                    log_message("WARNING", f"Reaped orphaned task {tid} (pid {t['pid']}, rc={rc})")
                 continue
             end_ts = t.get("ended_ts") or 0.0
             if end_ts and end_ts < cutoff:
