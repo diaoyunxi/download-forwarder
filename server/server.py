@@ -66,7 +66,7 @@ PORT = 18735
 # 绑定地址硬编码为本机回环地址，禁止监听外部网络接口，避免远程访问风险。
 # 若需更改，必须在此处显式修改并确认安全影响；启动时会强制校验。
 HOST = "127.0.0.1"
-VERSION = "1.9.0"
+VERSION = "1.10.1"
 # v1.9.0: aria2c added as a 7th first-class downloader (multi-connection,
 # resumable, BitTorrent/Metalink capable). It is detected via shutil.which.
 DEFAULT_PROGRAMS = ["wget", "curl", "idm", "ndm", "gopeed", "ffmpeg", "aria2c"]
