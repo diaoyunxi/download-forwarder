@@ -597,10 +597,14 @@ class DownloadHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _send_json(self, payload, status=200):
-        """Helper: send a JSON response with CORS headers."""
+        """Helper: send a JSON response with CORS headers and security headers."""
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self._send_cors_headers()
+        # Security headers — prevent MIME sniffing, clickjacking, and caching
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
 
