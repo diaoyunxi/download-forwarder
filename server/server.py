@@ -670,9 +670,8 @@ class DownloadHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         """Health check, info, history, config endpoints"""
         # /ping 健康检查豁免频率限制；其他端点应用限流
-        if not (self.path == "/ping" or self.path.startswith("/ping?")):
-            if self._rate_limited():
-                return
+        if not (self.path == "/ping" or self.path.startswith("/ping?")) and self._rate_limited():
+            return
         if self.path == "/ping" or self.path.startswith("/ping?"):
             self._send_json({
                 "status": "ok",
