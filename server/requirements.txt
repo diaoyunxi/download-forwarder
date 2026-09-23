@@ -1,0 +1,3 @@
+# download-forwarder server dependencies
+# All imports use Python standard library only - no third-party packages required.
+# Python 3.8+ required.
