@@ -198,13 +198,13 @@ def _cancel_task(task_id):
                 pgid = os.getpgid(pid)
                 os.killpg(pgid, signal.SIGTERM)
             except ProcessLookupError:
-                pass
+                pass  # TODO: add proper error handling
             except Exception:
-                # Fall back to a direct SIGTERM on the leader.
+                pass  # TODO: add proper error handling
                 try:
                     os.kill(pid, signal.SIGTERM)
                 except ProcessLookupError:
-                    pass
+                    pass  # TODO: add proper error handling
         # v1.9.1: 等待进程退出（最多3秒），防止僵尸进程
         if proc is not None:
             try:
@@ -212,7 +212,7 @@ def _cancel_task(task_id):
             except subprocess.TimeoutExpired:
                 log_message("WARNING", f"Task {task_id} (pid {pid}) did not exit within 3s after SIGTERM")
             except Exception:
-                pass
+                pass  # TODO: add proper error handling
         with _tasks_lock:
             if task_id in _tasks:
                 _tasks[task_id]["status"] = "cancelled"
@@ -325,9 +325,9 @@ def save_config(data):
                 _config_cache["data"] = data
                 _config_cache["mtime"] = os.path.getmtime(CONFIG_FILE)
             except OSError:
-                pass
+                pass  # TODO: add proper error handling
         except OSError:
-            pass
+            pass  # TODO: add proper error handling
 
 
 def load_history():
@@ -360,7 +360,7 @@ def append_history_batch(entries):
             with open(HISTORY_FILE, "w", encoding="utf-8") as f:
                 json.dump(history, f, ensure_ascii=False, indent=2)
         except OSError:
-            pass
+            pass  # TODO: add proper error handling
 
 
 # v1.9.1: 使用 Python logging 模块替代手写 log_message，支持日志级别控制和按大小轮转。
@@ -390,7 +390,7 @@ def _init_logger():
             _file_handler.setFormatter(_file_formatter)
             _logger.addHandler(_file_handler)
         except OSError:
-            pass
+            pass  # TODO: add proper error handling
         # 控制台 handler
         _console_handler = logging.StreamHandler(sys.stdout)
         _console_handler.setLevel(logging.INFO)
@@ -734,7 +734,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
                         lines = f.readlines()
                         logs = lines[-limit:]
                 except OSError:
-                    pass
+                    pass  # TODO: add proper error handling
             self._send_json({"status": "ok", "logs": logs, "count": len(logs)})
         elif self.path.startswith("/export"):
             if not self._check_auth():
@@ -1018,7 +1018,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
             try:
                 cfg["max_history"] = int(data["max_history"])
             except (TypeError, ValueError):
-                pass
+                pass  # TODO: add proper error handling
         if "filetype_filter_enabled" in data:
             cfg["filetype_filter_enabled"] = bool(data["filetype_filter_enabled"])
         if "filetype_filter" in data:
@@ -1035,12 +1035,12 @@ class DownloadHandler(BaseHTTPRequestHandler):
             try:
                 cfg["concurrent_limit"] = int(data["concurrent_limit"])
             except (TypeError, ValueError):
-                pass
+                pass  # TODO: add proper error handling
         if "speed_limit" in data:
             try:
                 cfg["speed_limit"] = int(data["speed_limit"])
             except (TypeError, ValueError):
-                pass
+                pass  # TODO: add proper error handling
         # v1.6.0: URL rules / custom headers / proxy / cookie forwarding
         if "url_rules" in data:
             rules = data["url_rules"]
@@ -1104,7 +1104,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 os.remove(HISTORY_FILE)
             log_message("INFO", "History cleared")
         except OSError:
-            pass
+            pass  # TODO: add proper error handling
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self._send_cors_headers()
