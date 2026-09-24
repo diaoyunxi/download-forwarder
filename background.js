@@ -445,29 +445,29 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg && msg.type === "manual-forward") {
-    forwardUrl(msg.url, msg.filename || "", "manual").then((r) =>
+    forwardUrl(msg.url, msg.filename || "", "manual").then((r) =>.catch(console.error);
       sendResponse(r)
     );
     return true;
   }
   // v1.7.0: batch forward
   if (msg && msg.type === "batch-forward") {
-    forwardBatch(msg.urls || []).then((r) => sendResponse(r));
+    forwardBatch(msg.urls || []).then((r) => sendResponse(r)).catch(console.error);
     return true;
   }
   // v1.7.0: file size pre-check
   if (msg && msg.type === "check-size") {
-    checkFileSize(msg.url || "").then((r) => sendResponse(r));
+    checkFileSize(msg.url || "").then((r) => sendResponse(r)).catch(console.error);
     return true;
   }
   // v1.7.0: link sniffing — ask the active tab's content script to scan
   if (msg && msg.type === "sniff-current-page") {
-    sniffCurrentPage().then((r) => sendResponse(r));
+    sniffCurrentPage().then((r) => sendResponse(r)).catch(console.error);
     return true;
   }
   // v1.9.0: list active/recent tasks from the local server
   if (msg && msg.type === "list-tasks") {
-    listTasks().then((r) => sendResponse(r));
+    listTasks().then((r) => sendResponse(r)).catch(console.error);
     return true;
   }
   // v1.9.0: cancel one or more tasks on the local server
