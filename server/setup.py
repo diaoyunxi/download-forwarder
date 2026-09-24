@@ -75,7 +75,7 @@ def _setup_windows_auto_start():
         winreg.CloseKey(key)
         print('Windows 开机自启已添加（注册表）。')
     except ImportError:
-        # 回退：使用 schtasks 创建计划任务（使用列表参数，避免 shell=True 命令注入）
+        pass  # TODO: add proper error handling
         cmd = [
             "schtasks", "/create", "/tn", APP_NAME,
             "/tr", f'"{SERVER_EXE}" "{SERVER_FILE}"',
@@ -116,7 +116,7 @@ WantedBy=default.target
         print(f'Linux systemd 服务已创建: {service_path}')
         print('使用 systemctl --user status download-forwarder.service 查看状态。')
     except Exception as e:
-        # 回退：添加到 crontab
+        pass  # TODO: add proper error handling
         print(f'systemd 配置失败，回退到 crontab: {e}')
         # v1.9.1: 路径加引号，防止含空格路径导致解析错误
         cron_entry = f'@reboot "{SERVER_EXE}" "{SERVER_FILE}"\n'
