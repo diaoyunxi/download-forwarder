@@ -1344,7 +1344,10 @@ class DownloadHandler(BaseHTTPRequestHandler):
             out_path = os.path.join(download_dir, safe_name)
         else:
             if is_stream_url(url):
-                default_name = "stream.mp4" if url.lower().endswith(".mpd") else "stream.ts"
+                # 与 is_stream_url 一致：按 URL path 判断容器类型，避免查询串
+                # （如 manifest.mpd?token=xxx）导致 .mpd 被误判为 .ts。
+                stream_path = urlparse(url).path.lower()
+                default_name = "stream.mp4" if stream_path.endswith(".mpd") else "stream.ts"
             else:
                 default_name = "media.mp4"
             out_path = os.path.join(download_dir, default_name)
