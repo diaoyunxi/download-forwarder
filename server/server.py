@@ -1570,7 +1570,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
 
         program = (data.get("program") or "wget").strip().lower()
         args = (data.get("arguments") or "").strip()
-        is_manual = bool(data.get("manual", True))
+        _is_manual = bool(data.get("manual", True))
         source = (data.get("source") or "batch").strip()
         cookies = (data.get("cookies") or "").strip()
         headers = data.get("headers") if isinstance(data.get("headers"), dict) else {}
@@ -1652,7 +1652,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
                     "program": program,
                     "filename": sanitize_filename(get_filename_from_url(url)) or "download",
                     "status": "error",
-                    "message": f"Concurrent download limit reached",
+                    "message": "Concurrent download limit reached",
                     "source": source,
                     "category": "",
                 })
