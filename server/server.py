@@ -773,6 +773,10 @@ class DownloadHandler(BaseHTTPRequestHandler):
             return
 
         content_length = int(self.headers.get("Content-Length", 0))
+        MAX_REQUEST_BODY = 50 * 1024 * 1024  # 50MB
+        if content_length > MAX_REQUEST_BODY:
+            self._send_json({"error": "请求体过大"}, 413)
+            return
         body = self.rfile.read(content_length)
 
         try:
