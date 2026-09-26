@@ -21,6 +21,7 @@ Enhanced with:
 import json
 import os
 import platform
+import contextlib
 import subprocess
 import sys
 import threading
@@ -1015,10 +1016,8 @@ class DownloadHandler(BaseHTTPRequestHandler):
         if "arguments" in data:
             cfg["arguments"] = data["arguments"]
         if "max_history" in data:
-            try:
+            with contextlib.suppress(TypeError, ValueError):
                 cfg["max_history"] = int(data["max_history"])
-            except (TypeError, ValueError):
-                pass
         if "filetype_filter_enabled" in data:
             cfg["filetype_filter_enabled"] = bool(data["filetype_filter_enabled"])
         if "filetype_filter" in data:
@@ -1032,15 +1031,11 @@ class DownloadHandler(BaseHTTPRequestHandler):
         if "url_whitelist" in data:
             cfg["url_whitelist"] = str(data["url_whitelist"])
         if "concurrent_limit" in data:
-            try:
+            with contextlib.suppress(TypeError, ValueError):
                 cfg["concurrent_limit"] = int(data["concurrent_limit"])
-            except (TypeError, ValueError):
-                pass
         if "speed_limit" in data:
-            try:
+            with contextlib.suppress(TypeError, ValueError):
                 cfg["speed_limit"] = int(data["speed_limit"])
-            except (TypeError, ValueError):
-                pass
         # v1.6.0: URL rules / custom headers / proxy / cookie forwarding
         if "url_rules" in data:
             rules = data["url_rules"]
@@ -1624,10 +1619,8 @@ class DownloadHandler(BaseHTTPRequestHandler):
                     effective_dir = os.path.join(download_dir, category_subfolder)
             needed_dirs.add(effective_dir)
         for d in needed_dirs:
-            try:
+            with contextlib.suppress(OSError):
                 os.makedirs(d, exist_ok=True)
-            except OSError:
-                pass
 
         # v1.9.1: 收集所有历史条目，循环结束后一次性批量写入
         batch_entries = []
@@ -1827,10 +1820,8 @@ def run_server():
         # because we are inside the except block (serve_forever has returned).
         log_message("INFO", "Server stopped by user")
     finally:
-        try:
+        with contextlib.suppress(Exception):
             server.server_close()
-        except Exception:
-            pass
 
 
 if __name__ == "__main__":
