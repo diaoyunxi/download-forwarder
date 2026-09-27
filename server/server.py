@@ -1009,7 +1009,14 @@ class DownloadHandler(BaseHTTPRequestHandler):
     def _handle_config_update(self, data):
         cfg = load_config()
         if "download_dir" in data and data["download_dir"]:
-            cfg["download_dir"] = data["download_dir"]
+            proposed = os.path.abspath(str(data["download_dir"]))
+            # 安全校验：拒绝写入系统敏感目录（CWE-73: External Control of File Name or Path）
+            _forbidden = ("/etc", "/proc", "/sys", "/dev", "/boot", "/usr", "/bin", "/sbin")
+            if any(proposed == f or proposed.startswith(f + os.sep) for f in _forbidden):
+                log_message("WARNING", f"Rejected dangerous download_dir: {proposed}")
+                self._send_error("download_dir points to a system directory", 400)
+                return
+            cfg["download_dir"] = proposed
         if "program" in data:
             cfg["program"] = data["program"]
         if "arguments" in data:
