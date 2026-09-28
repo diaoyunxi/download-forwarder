@@ -272,7 +272,7 @@ async function init() {
       availablePrograms = info.available_programs || [];
       updateProgramUI();
       updateServerStatus(true, {
-        version: info.version || "1.0.0",
+        version: info.version || "1.10.1",
         platform: info.platform || "unknown",
         available_programs: availablePrograms,
       });
@@ -1118,7 +1118,7 @@ function updateServerStatus(connected, info) {
   statusTextEl.textContent = connected ? "已连接" : "未连接";
 
   let infoText = connected
-    ? `本地服务器运行中 (v${(info && info.version) || "1.0.0"} / ${
+    ? `本地服务器运行中 (v${(info && info.version) || "1.10.1"} / ${
         (info && info.platform) || "unknown"
       })`
     : "请先运行: python server/server.py";
