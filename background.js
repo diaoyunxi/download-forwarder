@@ -266,7 +266,7 @@ async function checkConnection() {
     if (data && data.status === "ok") {
       serverConnected = true;
       serverInfo = {
-        version: data.version || "1.0.0",
+        version: data.version || "1.10.1",
         platform: data.platform || "unknown",
         available_programs: data.available_programs || [],
       };
