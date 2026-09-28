@@ -335,8 +335,9 @@ def load_history():
     if not os.path.exists(HISTORY_FILE):
         return []
     try:
-        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        with _history_lock:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
     except (json.JSONDecodeError, OSError):
         return []
 
