@@ -1639,24 +1639,27 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 continue
 
             # v1.9.1: 批量下载中增加并发限制检查
-            active = self._count_active_downloads()
-            if active >= concurrent_limit:
-                results.append({
-                    "url": url,
-                    "status": "error",
-                    "message": f"Concurrent download limit reached ({active}/{concurrent_limit})",
-                })
-                batch_entries.append({
-                    "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "url": url,
-                    "program": program,
-                    "filename": sanitize_filename(get_filename_from_url(url)) or "download",
-                    "status": "error",
-                    "message": f"Concurrent download limit reached",
-                    "source": source,
-                    "category": "",
-                })
-                continue
+            # 使用锁保护 check-then-act 序列，防止 TOCTOU 竞态：
+            # 多个批量请求可能同时通过并发检查导致超限
+            with _tasks_lock:
+                active = sum(1 for t in _tasks.values() if t.get("status") == "running")
+                if active >= concurrent_limit:
+                    results.append({
+                        "url": url,
+                        "status": "error",
+                        "message": f"Concurrent download limit reached ({active}/{concurrent_limit})",
+                    })
+                    batch_entries.append({
+                        "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "url": url,
+                        "program": program,
+                        "filename": sanitize_filename(get_filename_from_url(url)) or "download",
+                        "status": "error",
+                        "message": f"Concurrent download limit reached",
+                        "source": source,
+                        "category": "",
+                    })
+                    continue
 
             filename = sanitize_filename(get_filename_from_url(url)) or "download"
             chosen = program
