@@ -67,6 +67,9 @@ PORT = 18735
 # 若需更改，必须在此处显式修改并确认安全影响；启动时会强制校验。
 HOST = "127.0.0.1"
 VERSION = "1.9.0"
+
+# 历史记录最大条数，超过后自动裁剪旧记录
+MAX_HISTORY_ENTRIES = 1000
 # v1.9.0: aria2c added as a 7th first-class downloader (multi-connection,
 # resumable, BitTorrent/Metalink capable). It is detected via shutil.which.
 DEFAULT_PROGRAMS = ["wget", "curl", "idm", "ndm", "gopeed", "ffmpeg", "aria2c"]
@@ -335,8 +338,9 @@ def load_history():
     if not os.path.exists(HISTORY_FILE):
         return []
     try:
-        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        with _history_lock:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
     except (json.JSONDecodeError, OSError):
         return []
 
