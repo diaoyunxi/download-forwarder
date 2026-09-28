@@ -30,14 +30,14 @@ def switch_pip_to_tsinghua():
         result = subprocess.run(
             [sys.executable, '-m', 'pip', 'config', 'get', 'global.index-url'],
             capture_output=True, text=True
-        )
+        , timeout=120)
         if 'pypi.tuna.tsinghua.edu.cn' not in result.stdout:
             print('正在切换 pip 到清华镜像源...')
             subprocess.run(
                 [sys.executable, '-m', 'pip', 'config', 'set', 'global.index-url',
                  'https://pypi.tuna.tsinghua.edu.cn/simple'],
                 capture_output=True
-            )
+            , timeout=120)
             print('pip 镜像源切换成功。')
         else:
             print('已使用清华镜像源。')
@@ -120,7 +120,7 @@ WantedBy=default.target
         print(f'systemd 配置失败，回退到 crontab: {e}')
         # v1.9.1: 路径加引号，防止含空格路径导致解析错误
         cron_entry = f'@reboot "{SERVER_EXE}" "{SERVER_FILE}"\n'
-        result = subprocess.run(['crontab', '-l'], capture_output=True, text=True)
+        result = subprocess.run(['crontab', '-l'], capture_output=True, text=True, timeout=120)
         current_cron = result.stdout if result.returncode == 0 else ''
         if SERVER_FILE not in current_cron:
             with open(os.path.expanduser('~/.cron_tmp'), 'w') as f:
@@ -189,7 +189,7 @@ def _setup_macos_auto_start():
         result = subprocess.run(
             ['launchctl', 'load', '-w', plist_path],
             capture_output=True, text=True, check=False
-        )
+        , timeout=120)
         if result.returncode == 0:
             print(f'macOS LaunchAgent 已创建并启动: {plist_path}')
             print(f'使用 launchctl list | grep {label} 查看状态。')
@@ -202,7 +202,7 @@ def _setup_macos_auto_start():
         print('回退到 crontab 方案...')
         # v1.9.1: 路径加引号，防止含空格路径导致解析错误
         cron_entry = f'@reboot "{SERVER_EXE}" "{SERVER_FILE}"\n'
-        result = subprocess.run(['crontab', '-l'], capture_output=True, text=True)
+        result = subprocess.run(['crontab', '-l'], capture_output=True, text=True, timeout=120)
         current_cron = result.stdout if result.returncode == 0 else ''
         if SERVER_FILE not in current_cron:
             with open('/tmp/.df_cron_tmp', 'w') as f:
