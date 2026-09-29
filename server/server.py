@@ -222,7 +222,7 @@ def _cancel_task(task_id):
         log_message("INFO", f"Task {task_id} (pid {pid}, {task.get('program','?')}) cancelled")
         return True, "cancelled"
     except Exception as e:
-        return False, str(e)
+        return False, "Task cancellation failed"
 
 
 def _prune_tasks():
@@ -1223,9 +1223,9 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 "message": f"{program} not found. Please install it first or select another program.",
             }
         except OSError as e:
-            return {"status": "error", "message": f"Failed to start {program}: {e}"}
+            return {"status": "error", "message": f"Failed to start {program}. Please check if it is installed."}
         except Exception as e:
-            return {"status": "error", "message": str(e)}
+            return {"status": "error", "message": "Failed to start program. Please check server logs for details."}
 
     def _count_active_downloads(self):
         """v1.9.1: 统一从 _tasks 字典计算运行中任务数，替代独立计数器。"""
@@ -1503,7 +1503,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send_json({
                 "status": "error",
-                "message": str(e),
+                "message": "URL check failed. Please check server logs for details.",
                 "url": url,
             }, status=200)
 
