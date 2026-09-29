@@ -1768,7 +1768,7 @@ async function loadTasks() {
       countEl.textContent = `${tasks.length} 个任务（${running} 个运行中）`;
       statusEl.textContent = "";
     } else if (result && result.status === "error") {
-      listEl.innerHTML = '<div class="task-empty">' + (result.message || "加载失败") + '</div>';
+      listEl.innerHTML = '<div class="task-empty">' + escapeHtml(result.message || "加载失败") + '</div>';
       countEl.textContent = "0 个任务";
       statusEl.textContent = result.message || "";
     }
