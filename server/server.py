@@ -351,8 +351,9 @@ def append_history_batch(entries):
     _ensure_config_dir()
     with _history_lock:
         history = load_history()
-        for entry in entries:
-            history.insert(0, entry)
+        # 使用列表拼接替代逐条 insert(0)，避免 O(n*m) 性能问题
+        new_entries = list(reversed(entries))
+        history = new_entries + history
         cfg = load_config()
         max_items = cfg.get("max_history", MAX_HISTORY)
         history = history[:max_items]
