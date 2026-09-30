@@ -210,7 +210,23 @@ def _cancel_task(task_id):
             try:
                 proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
-                log_message("WARNING", f"Task {task_id} (pid {pid}) did not exit within 3s after SIGTERM")
+                # SIGTERM 被忽略或进程卡住，发送 SIGKILL 强制终止
+                log_message("WARNING", f"Task {task_id} (pid {pid}) did not exit within 3s after SIGTERM, sending SIGKILL")
+                try:
+                    if os.name != "nt":
+                        try:
+                            pgid = os.getpgid(pid)
+                            os.killpg(pgid, signal.SIGKILL)
+                        except (ProcessLookupError, PermissionError):
+                            pass
+                        except Exception:
+                            try:
+                                os.kill(pid, signal.SIGKILL)
+                            except (ProcessLookupError, PermissionError):
+                                pass
+                    proc.wait(timeout=5)
+                except Exception:
+                    log_message("WARNING", f"Task {task_id} (pid {pid}) could not be killed")
             except Exception:
                 pass
         with _tasks_lock:
