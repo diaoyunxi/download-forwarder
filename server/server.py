@@ -108,7 +108,6 @@ _PROGRAMS_CACHE_TTL = 60  # 秒
 
 # v1.9.0: active task registry. Maps task_id -> task dict.
 # Each task dict contains: task_id, pid, process (subprocess.Popen handle),
-# url, program, filename, started_at, status (running|completed|failed|cancelled),
 # ended_at, exit_code. The subprocess.Popen handle is kept so we can poll/wait
 # from a watcher thread without re-fetching by PID (which can be reused by
 # the OS after a process exits).
