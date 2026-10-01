@@ -772,7 +772,14 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 self._handle_history_clear()
             return
 
-        content_length = int(self.headers.get("Content-Length", 0))
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+        except (ValueError, TypeError):
+            self._send_error("Invalid Content-Length header", 400)
+            return
+        if content_length < 0:
+            self._send_error("Negative Content-Length", 400)
+            return
         body = self.rfile.read(content_length)
 
         try:
