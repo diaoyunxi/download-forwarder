@@ -1225,7 +1225,9 @@ class DownloadHandler(BaseHTTPRequestHandler):
         except OSError as e:
             return {"status": "error", "message": f"Failed to start {program}: {e}"}
         except Exception as e:
-            return {"status": "error", "message": str(e)}
+            if _logger:
+                _logger.error("Failed to open program %s: %s", program, e, exc_info=True)
+            return {"status": "error", "message": f"Failed to open {program}"}
 
     def _count_active_downloads(self):
         """v1.9.1: 统一从 _tasks 字典计算运行中任务数，替代独立计数器。"""
@@ -1501,9 +1503,11 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 "url": url,
             }, status=200)
         except Exception as e:
+            if _logger:
+                _logger.error("URL check failed for %s: %s", url, e, exc_info=True)
             self._send_json({
                 "status": "error",
-                "message": str(e),
+                "message": "URL check failed",
                 "url": url,
             }, status=200)
 
