@@ -1571,7 +1571,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
         program = (data.get("program") or "wget").strip().lower()
         args = (data.get("arguments") or "").strip()
         is_manual = bool(data.get("manual", True))
-        source = (data.get("source") or "batch").strip()
+        source = (data.get("source") or ("manual" if is_manual else "batch")).strip()
         cookies = (data.get("cookies") or "").strip()
         headers = data.get("headers") if isinstance(data.get("headers"), dict) else {}
         proxy = (data.get("proxy") or "").strip()
