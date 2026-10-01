@@ -30,6 +30,7 @@ def switch_pip_to_tsinghua():
         result = subprocess.run(
             [sys.executable, '-m', 'pip', 'config', 'get', 'global.index-url'],
             capture_output=True, text=True
+            timeout=300,
         )
         if 'pypi.tuna.tsinghua.edu.cn' not in result.stdout:
             print('正在切换 pip 到清华镜像源...')
@@ -37,6 +38,7 @@ def switch_pip_to_tsinghua():
                 [sys.executable, '-m', 'pip', 'config', 'set', 'global.index-url',
                  'https://pypi.tuna.tsinghua.edu.cn/simple'],
                 capture_output=True
+                timeout=300,
             )
             print('pip 镜像源切换成功。')
         else:
@@ -81,7 +83,7 @@ def _setup_windows_auto_start():
             "/tr", f'"{SERVER_EXE}" "{SERVER_FILE}"',
             "/sc", "onlogon", "/rl", "limited"
         ]
-        subprocess.run(cmd, shell=False, check=False)
+        subprocess.run(cmd, shell=False, check=False, timeout=300)
         print('Windows 计划任务已创建。')
     except Exception as e:
         print(f'设置 Windows 开机自启失败: {e}')
@@ -110,9 +112,9 @@ WantedBy=default.target
             f.write(service_content)
 
         # 重新加载并启用、启动服务
-        subprocess.run(['systemctl', '--user', 'daemon-reload'], check=False)
-        subprocess.run(['systemctl', '--user', 'enable', service_name], check=False)
-        subprocess.run(['systemctl', '--user', 'start', service_name], check=False)
+        subprocess.run(['systemctl', '--user', 'daemon-reload'], check=False, timeout=300)
+        subprocess.run(['systemctl', '--user', 'enable', service_name], check=False, timeout=300)
+        subprocess.run(['systemctl', '--user', 'start', service_name], check=False, timeout=300)
         print(f'Linux systemd 服务已创建: {service_path}')
         print('使用 systemctl --user status download-forwarder.service 查看状态。')
     except Exception as e:
@@ -120,12 +122,12 @@ WantedBy=default.target
         print(f'systemd 配置失败，回退到 crontab: {e}')
         # v1.9.1: 路径加引号，防止含空格路径导致解析错误
         cron_entry = f'@reboot "{SERVER_EXE}" "{SERVER_FILE}"\n'
-        result = subprocess.run(['crontab', '-l'], capture_output=True, text=True)
+        result = subprocess.run(['crontab', '-l'], capture_output=True, text=True, timeout=300)
         current_cron = result.stdout if result.returncode == 0 else ''
         if SERVER_FILE not in current_cron:
             with open(os.path.expanduser('~/.cron_tmp'), 'w') as f:
                 f.write(current_cron + cron_entry)
-            subprocess.run(['crontab', os.path.expanduser('~/.cron_tmp')], check=False)
+            subprocess.run(['crontab', os.path.expanduser('~/.cron_tmp')], check=False, timeout=300)
             os.remove(os.path.expanduser('~/.cron_tmp'))
             print('已添加到 crontab 实现开机自启。')
         else:
@@ -184,11 +186,12 @@ def _setup_macos_auto_start():
             f.write(plist_content)
 
         # 先卸载已有的同名 LaunchAgent（避免 load 报 "already loaded"）
-        subprocess.run(['launchctl', 'unload', plist_path], check=False)
+        subprocess.run(['launchctl', 'unload', plist_path], check=False, timeout=300)
         # 重新加载并启用
         result = subprocess.run(
             ['launchctl', 'load', '-w', plist_path],
             capture_output=True, text=True, check=False
+            timeout=300,
         )
         if result.returncode == 0:
             print(f'macOS LaunchAgent 已创建并启动: {plist_path}')
@@ -202,12 +205,12 @@ def _setup_macos_auto_start():
         print('回退到 crontab 方案...')
         # v1.9.1: 路径加引号，防止含空格路径导致解析错误
         cron_entry = f'@reboot "{SERVER_EXE}" "{SERVER_FILE}"\n'
-        result = subprocess.run(['crontab', '-l'], capture_output=True, text=True)
+        result = subprocess.run(['crontab', '-l'], capture_output=True, text=True, timeout=300)
         current_cron = result.stdout if result.returncode == 0 else ''
         if SERVER_FILE not in current_cron:
             with open('/tmp/.df_cron_tmp', 'w') as f:
                 f.write(current_cron + cron_entry)
-            subprocess.run(['crontab', '/tmp/.df_cron_tmp'], check=False)
+            subprocess.run(['crontab', '/tmp/.df_cron_tmp'], check=False, timeout=300)
             os.remove('/tmp/.df_cron_tmp')
             print('已添加到 crontab 实现开机自启。')
         else:
