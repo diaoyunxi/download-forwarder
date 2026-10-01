@@ -10,7 +10,7 @@ Download Forwarder 本地服务器安装脚本。
 
 v1.9.0 新增：
 - macOS 平台 LaunchAgent 自启动支持
-- 修正末尾 `exec(open(...).read())` 反模式，改用 runpy.run_path 在独立进程命名空间运行
+- 修正末尾 `exec(open(..., encoding="utf-8").read())` 反模式，改用 runpy.run_path 在独立进程命名空间运行
 """
 
 import os
@@ -106,7 +106,7 @@ WantedBy=default.target
 
     try:
         os.makedirs(os.path.dirname(service_path), exist_ok=True)
-        with open(service_path, 'w') as f:
+        with open(service_path, 'w', encoding="utf-8") as f:
             f.write(service_content)
 
         # 重新加载并启用、启动服务
@@ -123,7 +123,7 @@ WantedBy=default.target
         result = subprocess.run(['crontab', '-l'], capture_output=True, text=True)
         current_cron = result.stdout if result.returncode == 0 else ''
         if SERVER_FILE not in current_cron:
-            with open(os.path.expanduser('~/.cron_tmp'), 'w') as f:
+            with open(os.path.expanduser('~/.cron_tmp', encoding="utf-8"), 'w') as f:
                 f.write(current_cron + cron_entry)
             subprocess.run(['crontab', os.path.expanduser('~/.cron_tmp')], check=False)
             os.remove(os.path.expanduser('~/.cron_tmp'))
@@ -180,7 +180,7 @@ def _setup_macos_auto_start():
 """
     try:
         os.makedirs(plist_dir, exist_ok=True)
-        with open(plist_path, 'w') as f:
+        with open(plist_path, 'w', encoding="utf-8") as f:
             f.write(plist_content)
 
         # 先卸载已有的同名 LaunchAgent（避免 load 报 "already loaded"）
@@ -205,7 +205,7 @@ def _setup_macos_auto_start():
         result = subprocess.run(['crontab', '-l'], capture_output=True, text=True)
         current_cron = result.stdout if result.returncode == 0 else ''
         if SERVER_FILE not in current_cron:
-            with open('/tmp/.df_cron_tmp', 'w') as f:
+            with open('/tmp/.df_cron_tmp', 'w', encoding="utf-8") as f:
                 f.write(current_cron + cron_entry)
             subprocess.run(['crontab', '/tmp/.df_cron_tmp'], check=False)
             os.remove('/tmp/.df_cron_tmp')
@@ -217,7 +217,7 @@ def _setup_macos_auto_start():
 def start_server():
     """启动本地服务器。
 
-    v1.9.0: 修正了旧版本 `exec(open(SERVER_FILE).read())` 的反模式（exec 在当前
+    v1.9.0: 修正了旧版本 `exec(open(SERVER_FILE, encoding="utf-8").read())` 的反模式（exec 在当前
     进程的 globals 中执行，会污染 setup.py 的命名空间并导致 server.py 中的
     `if __name__ == '__main__'` 守卫失效）。改用 runpy.run_path 在独立的命名空间
     中以 `__main__` 身份执行 server.py，行为更接近直接 `python server.py`。
