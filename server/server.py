@@ -1481,6 +1481,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 "content_type": content_type,
                 "redirected": final_url != url,
             }
+            resp.close()
             self._send_json(payload)
         except urllib.error.HTTPError as e:
             # Some servers reject HEAD; fall back to a ranged GET of 0 bytes.
