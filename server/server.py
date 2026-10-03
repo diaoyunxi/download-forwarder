@@ -316,10 +316,13 @@ def load_config():
 
 def save_config(data):
     _ensure_config_dir()
+    import tempfile
     with _config_lock:
         try:
-            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(CONFIG_FILE), suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, CONFIG_FILE)
             # 保存后更新缓存，避免下次 load_config 时再次读磁盘
             try:
                 _config_cache["data"] = data
@@ -327,7 +330,10 @@ def save_config(data):
             except OSError:
                 pass
         except OSError:
-            pass
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 def load_history():
@@ -356,11 +362,17 @@ def append_history_batch(entries):
         cfg = load_config()
         max_items = cfg.get("max_history", MAX_HISTORY)
         history = history[:max_items]
+        import tempfile
         try:
-            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(HISTORY_FILE), suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(history, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, HISTORY_FILE)
         except OSError:
-            pass
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 # v1.9.1: 使用 Python logging 模块替代手写 log_message，支持日志级别控制和按大小轮转。
