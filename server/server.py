@@ -1482,6 +1482,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 "redirected": final_url != url,
             }
             self._send_json(payload)
+            resp.close()
         except urllib.error.HTTPError as e:
             # Some servers reject HEAD; fall back to a ranged GET of 0 bytes.
             if e.code in (405, 403, 501):
@@ -1551,6 +1552,10 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 "redirected": final_url != url,
             }
         except Exception:
+            try:
+                resp.close()
+            except Exception:
+                pass
             return None
 
     def _handle_batch(self, data):
