@@ -1,5 +1,8 @@
 # Download Forwarder
 
+> **注意：** 配置文件（`config.json`、`history.json`）在运行时自动生成于 `~/.download_forwarder/` 目录，而非仓库中的 `config/` 目录。
+
+
 浏览器扩展，捕获下载请求并转发到本地下载管理器（wget / curl / IDM / NDM / Gopeed / ffmpeg / aria2c）。
 
 > 当前版本：**v1.9.0**
