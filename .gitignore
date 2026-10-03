@@ -6,3 +6,6 @@
 # Python
 __pycache__/
 *.pyc
+
+# Environment variables file (contains secrets)
+.env
