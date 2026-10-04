@@ -103,6 +103,19 @@ _config_cache = {"data": None, "mtime": 0.0}
 _detected_programs = {"list": None, "ts": 0.0}
 _PROGRAMS_CACHE_TTL = 60  # 秒
 
+# URL scheme 白名单：仅允许 http 和 https，防止 file:// 等危险 scheme (S310, CWE-918)
+_ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
+
+
+def _validate_url_scheme(url: str) -> None:
+    """校验 URL scheme 是否在白名单内，拒绝 file:// 等危险协议。"""
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    if parsed.scheme and parsed.scheme.lower() not in _ALLOWED_URL_SCHEMES:
+        raise ValueError(f"URL scheme '{parsed.scheme}' 不在白名单 {_ALLOWED_URL_SCHEMES} 中")
+
+
+
 # v1.9.1: 移除独立的 _active_downloads 计数器，统一从 _tasks 字典计算运行中任务数。
 # 保留锁引用以兼容已有调用方式，但不再维护独立计数。
 
@@ -1450,6 +1463,8 @@ class DownloadHandler(BaseHTTPRequestHandler):
             headers["User-Agent"] = srv_ua
 
         try:
+            _validate_url_scheme(url)
+
             req = urllib.request.Request(url, method="HEAD", headers=headers)
             if cookies:
                 req.add_header("Cookie", cookies)
@@ -1512,6 +1527,8 @@ class DownloadHandler(BaseHTTPRequestHandler):
         try:
             get_headers = dict(headers or {})
             get_headers["Range"] = "bytes=0-0"
+            _validate_url_scheme(url)
+
             req = urllib.request.Request(url, method="GET", headers=get_headers)
             if cookies:
                 req.add_header("Cookie", cookies)
