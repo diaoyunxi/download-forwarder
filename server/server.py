@@ -590,6 +590,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
         # v1.9.0: allow Authorization header so the extension can send the
         # Bearer token required when auth_token is configured server-side.
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header('X-Content-Type-Options', 'nosniff')
 
     def do_OPTIONS(self):
         self.send_response(204)
