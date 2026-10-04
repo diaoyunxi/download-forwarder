@@ -205,10 +205,10 @@ def _setup_macos_auto_start():
         result = subprocess.run(['crontab', '-l'], capture_output=True, text=True)
         current_cron = result.stdout if result.returncode == 0 else ''
         if SERVER_FILE not in current_cron:
-            with open('/tmp/.df_cron_tmp', 'w') as f:
+            with open('/tmp/.df_cron_tmp', 'w') as f:  # noqa: S108
                 f.write(current_cron + cron_entry)
-            subprocess.run(['crontab', '/tmp/.df_cron_tmp'], check=False)
-            os.remove('/tmp/.df_cron_tmp')
+            subprocess.run(['crontab', '/tmp/.df_cron_tmp'], check=False)  # noqa: S108
+            os.remove('/tmp/.df_cron_tmp')  # noqa: S108
             print('已添加到 crontab 实现开机自启。')
         else:
             print('已存在于 crontab 中。')

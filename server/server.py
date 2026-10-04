@@ -211,7 +211,7 @@ def _cancel_task(task_id):
                 proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 log_message("WARNING", f"Task {task_id} (pid {pid}) did not exit within 3s after SIGTERM")
-            except Exception:
+            except Exception:  # noqa: S110
                 pass
         with _tasks_lock:
             if task_id in _tasks:
@@ -1829,7 +1829,7 @@ def run_server():
     finally:
         try:
             server.server_close()
-        except Exception:
+        except Exception:  # noqa: S110
             pass
 
 
