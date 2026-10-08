@@ -26,6 +26,7 @@ import sys
 import threading
 import time
 import datetime
+from datetime import timezone
 import shutil
 import re
 import uuid
@@ -127,7 +128,7 @@ def _register_task(process, url, program, filename, source="auto"):
     v1.9.1: 将 Popen 对象存入 task dict，以便 _cancel_task 能直接 wait 进程退出。
     """
     task_id = _gen_task_id()
-    started = datetime.datetime.now()
+    started = datetime.datetime.now(timezone.utc)
     with _tasks_lock:
         _tasks[task_id] = {
             "task_id": task_id,
@@ -153,7 +154,7 @@ def _register_task(process, url, program, filename, source="auto"):
         except Exception as e:
             rc = -1
             log_message("WARNING", f"task {task_id} watcher error: {e}")
-        ended = datetime.datetime.now()
+        ended = datetime.datetime.now(timezone.utc)
         with _tasks_lock:
             if task_id in _tasks:
                 # Don't overwrite a "cancelled" status set by _cancel_task.
@@ -216,8 +217,8 @@ def _cancel_task(task_id):
         with _tasks_lock:
             if task_id in _tasks:
                 _tasks[task_id]["status"] = "cancelled"
-                _tasks[task_id]["ended_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                _tasks[task_id]["ended_ts"] = datetime.datetime.now().timestamp()
+                _tasks[task_id]["ended_at"] = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                _tasks[task_id]["ended_ts"] = datetime.datetime.now(timezone.utc).timestamp()
                 _tasks[task_id]["exit_code"] = -1
         log_message("INFO", f"Task {task_id} (pid {pid}, {task.get('program','?')}) cancelled")
         return True, "cancelled"
@@ -981,7 +982,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 log_message("ERROR", f"All {max_retries + 1} attempts failed")
 
         entry = {
-            "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "timestamp": datetime.datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
             "url": url,
             "program": program,
             "filename": filename or get_filename_from_url(url),
@@ -1647,7 +1648,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
                     "message": f"Concurrent download limit reached ({active}/{concurrent_limit})",
                 })
                 batch_entries.append({
-                    "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "timestamp": datetime.datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
                     "url": url,
                     "program": program,
                     "filename": sanitize_filename(get_filename_from_url(url)) or "download",
@@ -1699,7 +1700,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 "task_id": result.get("task_id", ""),
             })
             batch_entries.append({
-                "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "timestamp": datetime.datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
                 "url": url,
                 "program": chosen,
                 "filename": filename,
