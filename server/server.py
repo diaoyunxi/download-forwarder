@@ -221,8 +221,8 @@ def _cancel_task(task_id):
                 _tasks[task_id]["exit_code"] = -1
         log_message("INFO", f"Task {task_id} (pid {pid}, {task.get('program','?')}) cancelled")
         return True, "cancelled"
-    except Exception as e:
-        return False, str(e)
+    except Exception:
+        return False, "cancel_failed"
 
 
 def _prune_tasks():
@@ -957,7 +957,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
             os.makedirs(effective_dir, exist_ok=True)
         except OSError as e:
             log_message("ERROR", f"Failed to create download directory: {e}")
-            self._send_error(f"Cannot create directory: {e}", 500)
+            self._send_error("Cannot create download directory", 500)
             return
 
         # Retry logic - v1.9.1: 不再阻塞请求线程，仅重试一次快速重试
@@ -1145,7 +1145,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
             save_config(default_cfg)
             log_message("INFO", "Server config reset to defaults")
         except OSError as e:
-            self._send_error(f"Reset failed: {e}", 500)
+            self._send_error("Reset failed", 500)
             return
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -1223,7 +1223,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 "message": f"{program} not found. Please install it first or select another program.",
             }
         except OSError as e:
-            return {"status": "error", "message": f"Failed to start {program}: {e}"}
+            return {"status": "error", "message": f"Failed to start {program}"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
