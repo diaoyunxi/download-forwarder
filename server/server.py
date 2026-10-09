@@ -185,7 +185,7 @@ def _cancel_task(task_id):
         if os.name == "nt":
             # /T kills the whole process tree, /F forces termination.
             subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                ["taskkill", "/PID", str(pid), "/T", "/F"],  # noqa: S607 — Windows 系统命令
                 capture_output=True,
                 check=False,
             )
