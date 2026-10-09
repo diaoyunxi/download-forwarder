@@ -1,6 +1,6 @@
 // Download Forwarder - Popup UI
 const LOCAL_SERVER = "http://127.0.0.1:18735";
-const EXT_VERSION = "1.9.0";
+const EXT_VERSION = "1.10.1";
 
 // --- Element refs ---
 const toggleEl = document.getElementById("toggle");
