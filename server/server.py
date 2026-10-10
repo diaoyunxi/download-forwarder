@@ -202,6 +202,7 @@ def _cancel_task(task_id):
                 ["taskkill", "/PID", str(pid), "/T", "/F"],  # noqa: S607 — Windows 系统命令
                 capture_output=True,
                 check=False,
+                timeout=300,
             )
         else:
             # We launch the downloaders with start_new_session=True on POSIX,
