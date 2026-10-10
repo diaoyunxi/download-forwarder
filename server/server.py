@@ -485,13 +485,14 @@ def _check_rate_limit():
 # 安全：下载器参数中的危险 shell 元字符集合。
 # 虽然 subprocess 以列表形式调用（shell=False），元字符不会被 shell 直接解释，
 # 但部分下载器可能将参数二次传递给子 shell，因此做防御性过滤。
-_SHELL_META_CHARS = set(";|&$`><")
+_SHELL_META_CHARS = set(";|&$`><\n\r")
 
 
 def sanitize_arguments(args_str):
     """过滤参数字符串中的危险 shell 元字符，并拆分为参数列表。
 
-    移除 ;|&$`>< 等元字符后按空白拆分，返回安全的参数列表。
+    移除 ;|&$`><\\n\\r 等元字符后按空白拆分，返回安全的参数列表。
+    \\n\\r 的过滤防止通过 wget/curl 的 --header 参数进行 HTTP 头注入。
     """
     if not args_str:
         return []
