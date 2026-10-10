@@ -1612,9 +1612,11 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 continue
             filename = sanitize_filename(get_filename_from_url(url)) or "download"
             chosen = program
-            matched = match_url_rule(url, url_rules)
-            if matched:
-                chosen = matched
+            # 手动触发的批量下载跳过 URL 规则匹配（与单下载行为一致）
+            if not is_manual:
+                matched = match_url_rule(url, url_rules)
+                if matched:
+                    chosen = matched
             if cfg.get("auto_ffmpeg_streams", True) and is_stream_url(url) and chosen != "ffmpeg" and ffmpeg_available:
                 chosen = "ffmpeg"
             effective_dir = download_dir
@@ -1660,9 +1662,11 @@ class DownloadHandler(BaseHTTPRequestHandler):
 
             filename = sanitize_filename(get_filename_from_url(url)) or "download"
             chosen = program
-            matched = match_url_rule(url, url_rules)
-            if matched:
-                chosen = matched
+            # 手动触发的批量下载跳过 URL 规则匹配（与单下载行为一致）
+            if not is_manual:
+                matched = match_url_rule(url, url_rules)
+                if matched:
+                    chosen = matched
             # v1.8.0: auto-route stream URLs to ffmpeg in batch mode too
             if cfg.get("auto_ffmpeg_streams", True) and is_stream_url(url) and chosen != "ffmpeg" and ffmpeg_available:
                 chosen = "ffmpeg"
