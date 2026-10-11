@@ -190,7 +190,7 @@ def _setup_macos_auto_start():
         # 重新加载并启用
         result = subprocess.run(
             ['launchctl', 'load', '-w', plist_path],
-            capture_output=True, text=True, check=False
+            capture_output=True, text=True, check=False,
             timeout=300,
         )
         if result.returncode == 0:
