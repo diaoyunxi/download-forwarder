@@ -29,7 +29,7 @@ def switch_pip_to_tsinghua():
         import pip
         result = subprocess.run(
             [sys.executable, '-m', 'pip', 'config', 'get', 'global.index-url'],
-            capture_output=True, text=True
+            capture_output=True, text=True,
             timeout=300,
         )
         if 'pypi.tuna.tsinghua.edu.cn' not in result.stdout:
@@ -37,7 +37,7 @@ def switch_pip_to_tsinghua():
             subprocess.run(
                 [sys.executable, '-m', 'pip', 'config', 'set', 'global.index-url',
                  'https://pypi.tuna.tsinghua.edu.cn/simple'],
-                capture_output=True
+                capture_output=True,
                 timeout=300,
             )
             print('pip 镜像源切换成功。')
@@ -190,7 +190,7 @@ def _setup_macos_auto_start():
         # 重新加载并启用
         result = subprocess.run(
             ['launchctl', 'load', '-w', plist_path],
-            capture_output=True, text=True, check=False
+            capture_output=True, text=True, check=False,
             timeout=300,
         )
         if result.returncode == 0:
