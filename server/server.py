@@ -1197,7 +1197,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
             }
             save_config(default_cfg)
             log_message("INFO", "Server config reset to defaults")
-        except OSError as e:
+        except OSError:
             self._send_error("Reset failed", 500)
             return
         self.send_response(200)
@@ -1275,7 +1275,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 "status": "error",
                 "message": f"{program} not found. Please install it first or select another program.",
             }
-        except OSError as e:
+        except OSError:
             return {"status": "error", "message": f"Failed to start {program}"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
@@ -1717,7 +1717,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
                     "program": program,
                     "filename": sanitize_filename(get_filename_from_url(url)) or "download",
                     "status": "error",
-                    "message": f"Concurrent download limit reached",
+                    "message": "Concurrent download limit reached",
                     "source": source,
                     "category": "",
                 })
