@@ -891,6 +891,14 @@ class DownloadHandler(BaseHTTPRequestHandler):
             self._send_error("Missing URL", 400)
             return
 
+        # 与 /check 端点保持一致：拒绝 file:// 等危险 scheme，防止 curl/ffmpeg 读取本地文件
+        try:
+            _validate_url_scheme(url)
+        except ValueError as e:
+            log_message("WARNING", f"Rejected download URL with disallowed scheme: {e}")
+            self._send_error(str(e), 400)
+            return
+
         cfg = load_config()
         download_dir = cfg.get("download_dir") or os.path.join(os.path.expanduser("~"), "Downloads")
         max_retries = cfg.get("max_retries", 3)
@@ -1039,7 +1047,10 @@ class DownloadHandler(BaseHTTPRequestHandler):
             "filename": filename or get_filename_from_url(url),
             "status": result.get("status"),
             "message": result.get("message", ""),
-            "retries": attempt if result.get("status") != "success" else 0,
+            # attempt 是最后一次尝试的下标：第 0 次成功 = 0 次重试；
+            # 第 2 次成功 = 2 次重试；全部失败时 attempt = max_retries。
+            # 之前写成 `attempt if status != success else 0` 会把成功时的重试次数吞掉。
+            "retries": attempt,
             "source": source,
             "category": category_subfolder,
         }
@@ -1703,6 +1714,24 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 results.append({"url": "", "status": "error", "message": "empty url"})
                 continue
 
+            # 与单下载端点保持一致：拒绝 file:// 等危险 scheme
+            try:
+                _validate_url_scheme(url)
+            except ValueError as e:
+                results.append({"url": url, "status": "error", "message": str(e)})
+                batch_entries.append({
+                    "timestamp": datetime.datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                    "url": url,
+                    "program": program,
+                    "filename": sanitize_filename(get_filename_from_url(url)) or "download",
+                    "status": "error",
+                    "message": str(e),
+                    "retries": 0,
+                    "source": source,
+                    "category": "",
+                })
+                continue
+
             # v1.9.1: 批量下载中增加并发限制检查
             active = self._count_active_downloads()
             if active >= concurrent_limit:
@@ -1772,7 +1801,8 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 "filename": filename,
                 "status": status,
                 "message": result.get("message", ""),
-                "retries": attempt if status != "success" else 0,
+                # 与单下载一致：attempt 即实际重试次数（成功时也记录）
+                "retries": attempt,
                 "source": source,
                 "category": category_subfolder,
             })
