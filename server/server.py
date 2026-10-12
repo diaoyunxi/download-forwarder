@@ -182,9 +182,70 @@ def _register_task(process, url, program, filename, source="auto"):
     return task_id
 
 
+def _send_term_signal(pid: int) -> None:
+    """Send SIGTERM (POSIX) or taskkill (Windows) to terminate a process."""
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],  # noqa: S607
+            capture_output=True,
+            check=False,
+            timeout=300,
+        )
+    else:
+        try:
+            pgid = os.getpgid(pid)
+            os.killpg(pgid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except Exception:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+
+
+def _force_kill_process(pid: int, proc, task_id: str) -> None:
+    """Force kill a process with SIGKILL if it did not exit after SIGTERM."""
+    log_message(
+        "WARNING",
+        f"Task {task_id} (pid {pid}) did not exit within 3s after SIGTERM, sending SIGKILL",
+    )
+    try:
+        if os.name != "nt":
+            try:
+                pgid = os.getpgid(pid)
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            except Exception:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+        if proc is not None:
+            proc.wait(timeout=5)
+    except Exception:
+        log_message("WARNING", f"Task {task_id} (pid {pid}) could not be killed")
+
+
+def _mark_task_cancelled(task_id: str, pid: int, task: dict) -> None:
+    """Update the task record to reflect cancellation."""
+    now = datetime.datetime.now(timezone.utc)
+    with _tasks_lock:
+        if task_id in _tasks:
+            _tasks[task_id]["status"] = "cancelled"
+            _tasks[task_id]["ended_at"] = now.strftime("%Y-%m-%d %H:%M:%S")
+            _tasks[task_id]["ended_ts"] = now.timestamp()
+            _tasks[task_id]["exit_code"] = -1
+    log_message("INFO", f"Task {task_id} (pid {pid}, {task.get('program', '?')}) cancelled")
+
+
 def _cancel_task(task_id):
     """Terminate a running task's process group. Returns (ok, message).
-    v1.9.1: 发送终止信号后等待进程退出（最多3秒），避免进程成为僵尸。
+
+    Refactored: extracted _send_term_signal, _force_kill_process, and
+    _mark_task_cancelled to reduce branch count (PLR0912) and statement
+    count (PLR0915).
     """
     with _tasks_lock:
         task = _tasks.get(task_id)
@@ -193,64 +254,21 @@ def _cancel_task(task_id):
         if task["status"] != "running":
             return False, f"task is already {task['status']}"
         pid = task["pid"]
-        proc = task.get("process")  # v1.9.1: 获取 Popen 对象用于后续 wait
+        proc = task.get("process")
 
     try:
-        if os.name == "nt":
-            # /T kills the whole process tree, /F forces termination.
-            subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"],  # noqa: S607 — Windows 系统命令
-                capture_output=True,
-                check=False,
-                timeout=300,
-            )
-        else:
-            # We launch the downloaders with start_new_session=True on POSIX,
-            # so the child is the leader of its own process group. Killing
-            # the entire group ensures helper processes (e.g. ffmpeg segment
-            # fetchers, aria2c connection workers) are also terminated.
-            try:
-                pgid = os.getpgid(pid)
-                os.killpg(pgid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            except Exception:
-                # Fall back to a direct SIGTERM on the leader.
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-        # v1.9.1: 等待进程退出（最多3秒），防止僵尸进程
+        _send_term_signal(pid)
+
+        # Wait up to 3 s for graceful exit, then force-kill.
         if proc is not None:
             try:
                 proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
-                # SIGTERM 被忽略或进程卡住，发送 SIGKILL 强制终止
-                log_message("WARNING", f"Task {task_id} (pid {pid}) did not exit within 3s after SIGTERM, sending SIGKILL")
-                try:
-                    if os.name != "nt":
-                        try:
-                            pgid = os.getpgid(pid)
-                            os.killpg(pgid, signal.SIGKILL)
-                        except (ProcessLookupError, PermissionError):
-                            pass
-                        except Exception:
-                            try:
-                                os.kill(pid, signal.SIGKILL)
-                            except (ProcessLookupError, PermissionError):
-                                pass
-                    proc.wait(timeout=5)
-                except Exception:
-                    log_message("WARNING", f"Task {task_id} (pid {pid}) could not be killed")
+                _force_kill_process(pid, proc, task_id)
             except Exception:
                 pass
-        with _tasks_lock:
-            if task_id in _tasks:
-                _tasks[task_id]["status"] = "cancelled"
-                _tasks[task_id]["ended_at"] = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-                _tasks[task_id]["ended_ts"] = datetime.datetime.now(timezone.utc).timestamp()
-                _tasks[task_id]["exit_code"] = -1
-        log_message("INFO", f"Task {task_id} (pid {pid}, {task.get('program','?')}) cancelled")
+
+        _mark_task_cancelled(task_id, pid, task)
         return True, "cancelled"
     except Exception:
         return False, "cancel_failed"
