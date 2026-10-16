@@ -18,27 +18,27 @@ Enhanced with:
 - v1.9.0: aria2c downloader support
 """
 
+import contextlib
+import datetime
+import hmac
 import json
+import logging
+import logging.handlers
 import os
 import platform
-import contextlib
+import re
+import shutil
+import signal
 import subprocess
 import sys
 import threading
 import time
-import datetime
-from datetime import timezone
-import shutil
-import re
-import uuid
-import signal
-import hmac
-import logging
-import logging.handlers
-import urllib.request
 import urllib.error
-from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
+import urllib.request
+import uuid
+from datetime import timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 
 # v1.9.1: urllib 连接池，避免每次预检都新建 opener
 _urllib_pool_lock = threading.Lock()
@@ -216,10 +216,8 @@ def _cancel_task(task_id):
                 pass
             except Exception:
                 # Fall back to a direct SIGTERM on the leader.
-                try:
+                with contextlib.suppress(ProcessLookupError):
                     os.kill(pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
         # v1.9.1: 等待进程退出（最多3秒），防止僵尸进程
         if proc is not None:
             try:
@@ -235,10 +233,8 @@ def _cancel_task(task_id):
                         except (ProcessLookupError, PermissionError):
                             pass
                         except Exception:
-                            try:
+                            with contextlib.suppress(ProcessLookupError, PermissionError):
                                 os.kill(pid, signal.SIGKILL)
-                            except (ProcessLookupError, PermissionError):
-                                pass
                     proc.wait(timeout=5)
                 except Exception:
                     log_message("WARNING", f"Task {task_id} (pid {pid}) could not be killed")
@@ -303,7 +299,7 @@ def load_config():
         # 需要从磁盘读取
         if os.path.exists(CONFIG_FILE):
             try:
-                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                with open(CONFIG_FILE, encoding="utf-8") as f:
                     data = json.load(f)
             except (json.JSONDecodeError, OSError):
                 data = {}
@@ -361,10 +357,8 @@ def save_config(data):
             except OSError:
                 pass
         except OSError:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
-            except OSError:
-                pass
 
 
 def load_history():
@@ -372,7 +366,7 @@ def load_history():
     if not os.path.exists(HISTORY_FILE):
         return []
     try:
-        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+        with open(HISTORY_FILE, encoding="utf-8") as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return []
@@ -401,10 +395,8 @@ def append_history_batch(entries):
                 json.dump(history, f, ensure_ascii=False, indent=2)
             os.replace(tmp_path, HISTORY_FILE)
         except OSError:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
-            except OSError:
-                pass
 
 
 # v1.9.1: 使用 Python logging 模块替代手写 log_message，支持日志级别控制和按大小轮转。
@@ -619,10 +611,7 @@ def is_stream_url(url):
     except Exception:
         path = url.lower()
     # Strip fragment / query already done by urlparse; just check suffix
-    for ext in (".m3u8", ".m3u", ".mpd"):
-        if path.endswith(ext):
-            return True
-    return False
+    return any(path.endswith(ext) for ext in (".m3u8", ".m3u", ".mpd"))
 
 
 class DownloadHandler(BaseHTTPRequestHandler):
@@ -775,7 +764,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
             logs = []
             if os.path.exists(LOG_FILE):
                 try:
-                    with open(LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
+                    with open(LOG_FILE, encoding="utf-8", errors="replace") as f:
                         lines = f.readlines()
                         logs = lines[-limit:]
                 except OSError:
@@ -1197,7 +1186,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
             }
             save_config(default_cfg)
             log_message("INFO", "Server config reset to defaults")
-        except OSError as e:
+        except OSError:
             self._send_error("Reset failed", 500)
             return
         self.send_response(200)
@@ -1275,7 +1264,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 "status": "error",
                 "message": f"{program} not found. Please install it first or select another program.",
             }
-        except OSError as e:
+        except OSError:
             return {"status": "error", "message": f"Failed to start {program}"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
@@ -1288,7 +1277,6 @@ class DownloadHandler(BaseHTTPRequestHandler):
     def _register_download(self):
         """v1.9.1: 不再维护独立计数器。任务注册由 _register_task 处理，
         运行中任务数通过 _count_active_downloads 从 _tasks 字典动态计算。"""
-        pass
 
     def _build_command(self, url, program, args, filename, download_dir,
                        speed_limit=0, cookies="", headers=None, proxy=""):
@@ -1512,7 +1500,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
             if cookies:
                 req.add_header("Cookie", cookies)
             opener = _get_urllib_opener(proxy)
-            resp = opener.open(req, timeout=10)
+            resp = opener.open(req, timeout=10)  # noqa: S310
             size_raw = resp.headers.get("Content-Length") or resp.headers.get("content-length") or ""
             try:
                 size = int(size_raw) if size_raw else 0
@@ -1577,7 +1565,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
             if cookies:
                 req.add_header("Cookie", cookies)
             opener = _get_urllib_opener(proxy)
-            resp = opener.open(req, timeout=10)
+            resp = opener.open(req, timeout=10)  # noqa: S310
             # Content-Range: bytes 0-0/12345 -> total = 12345
             cr = resp.headers.get("Content-Range") or resp.headers.get("content-range") or ""
             size = 0
@@ -1612,10 +1600,8 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 "redirected": final_url != url,
             }
         except Exception:
-            try:
+            with contextlib.suppress(Exception):
                 resp.close()
-            except Exception:
-                pass
             return None
 
     def _handle_batch(self, data):
@@ -1717,7 +1703,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
                     "program": program,
                     "filename": sanitize_filename(get_filename_from_url(url)) or "download",
                     "status": "error",
-                    "message": f"Concurrent download limit reached",
+                    "message": "Concurrent download limit reached",
                     "source": source,
                     "category": "",
                 })
@@ -1867,7 +1853,6 @@ class DownloadHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         """Route server access log to our own log file instead of stderr"""
         # Keep quiet for common success cases; only log errors in other places
-        pass
 
 
 def run_server():
