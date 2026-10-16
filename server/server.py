@@ -214,7 +214,7 @@ def _cancel_task(task_id):
                 os.killpg(pgid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
-            except Exception:
+            except Exception as e:
                 # Fall back to a direct SIGTERM on the leader.
                 try:
                     os.kill(pid, signal.SIGTERM)
@@ -234,15 +234,15 @@ def _cancel_task(task_id):
                             os.killpg(pgid, signal.SIGKILL)
                         except (ProcessLookupError, PermissionError):
                             pass
-                        except Exception:
+                        except Exception as e:
                             try:
                                 os.kill(pid, signal.SIGKILL)
                             except (ProcessLookupError, PermissionError):
                                 pass
                     proc.wait(timeout=5)
-                except Exception:
+                except Exception as e:
                     log_message("WARNING", f"Task {task_id} (pid {pid}) could not be killed")
-            except Exception:
+            except Exception as e:
                 pass
         with _tasks_lock:
             if task_id in _tasks:
@@ -252,7 +252,7 @@ def _cancel_task(task_id):
                 _tasks[task_id]["exit_code"] = -1
         log_message("INFO", f"Task {task_id} (pid {pid}, {task.get('program','?')}) cancelled")
         return True, "cancelled"
-    except Exception:
+    except Exception as e:
         return False, "cancel_failed"
 
 
@@ -549,7 +549,7 @@ def get_filename_from_url(url):
         path = urlparse(url).path
         name = os.path.basename(path)
         return sanitize_filename(name) or "download"
-    except Exception:
+    except Exception as e:
         return "download"
 
 
@@ -616,7 +616,7 @@ def is_stream_url(url):
         return False
     try:
         path = urlparse(url).path.lower()
-    except Exception:
+    except Exception as e:
         path = url.lower()
     # Strip fragment / query already done by urlparse; just check suffix
     for ext in (".m3u8", ".m3u", ".mpd"):
@@ -1611,10 +1611,10 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 "content_type": content_type,
                 "redirected": final_url != url,
             }
-        except Exception:
+        except Exception as e:
             try:
                 resp.close()
-            except Exception:
+            except Exception as e:
                 pass
             return None
 
