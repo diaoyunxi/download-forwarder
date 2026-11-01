@@ -1512,7 +1512,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
             if cookies:
                 req.add_header("Cookie", cookies)
             opener = _get_urllib_opener(proxy)
-            resp = opener.open(req, timeout=10)
+            resp = opener.open(req, timeout=10)  # noqa: S310
             size_raw = resp.headers.get("Content-Length") or resp.headers.get("content-length") or ""
             try:
                 size = int(size_raw) if size_raw else 0
@@ -1577,7 +1577,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
             if cookies:
                 req.add_header("Cookie", cookies)
             opener = _get_urllib_opener(proxy)
-            resp = opener.open(req, timeout=10)
+            resp = opener.open(req, timeout=10)  # noqa: S310
             # Content-Range: bytes 0-0/12345 -> total = 12345
             cr = resp.headers.get("Content-Range") or resp.headers.get("content-range") or ""
             size = 0
