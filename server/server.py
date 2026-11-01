@@ -209,17 +209,16 @@ def _cancel_task(task_id):
             # so the child is the leader of its own process group. Killing
             # the entire group ensures helper processes (e.g. ffmpeg segment
             # fetchers, aria2c connection workers) are also terminated.
+            import contextlib
             try:
                 pgid = os.getpgid(pid)
                 os.killpg(pgid, signal.SIGTERM)
             except ProcessLookupError:
-                pass
+                pass  # 进程已退出，无需终止
             except Exception:
                 # Fall back to a direct SIGTERM on the leader.
-                try:
+                with contextlib.suppress(ProcessLookupError):
                     os.kill(pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
         # v1.9.1: 等待进程退出（最多3秒），防止僵尸进程
         if proc is not None:
             try:
@@ -233,12 +232,10 @@ def _cancel_task(task_id):
                             pgid = os.getpgid(pid)
                             os.killpg(pgid, signal.SIGKILL)
                         except (ProcessLookupError, PermissionError):
-                            pass
+                            pass  # 进程已退出或无权限
                         except Exception:
-                            try:
+                            with contextlib.suppress(ProcessLookupError, PermissionError):
                                 os.kill(pid, signal.SIGKILL)
-                            except (ProcessLookupError, PermissionError):
-                                pass
                     proc.wait(timeout=5)
                 except Exception:
                     log_message("WARNING", f"Task {task_id} (pid {pid}) could not be killed")
