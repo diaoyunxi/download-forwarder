@@ -619,10 +619,7 @@ def is_stream_url(url):
     except Exception:
         path = url.lower()
     # Strip fragment / query already done by urlparse; just check suffix
-    for ext in (".m3u8", ".m3u", ".mpd"):
-        if path.endswith(ext):
-            return True
-    return False
+    return path.endswith((".m3u8", ".m3u", ".mpd"))
 
 
 class DownloadHandler(BaseHTTPRequestHandler):
